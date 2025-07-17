@@ -1,8 +1,9 @@
 import argparse
 from model_with_sigmoid_head import AutoModelForCausalLMWithSigmoidHead
 from prepare_data import build_datasets
-from transformers import Trainer, TrainingArguments, set_seed, EarlyStoppingCallback
+from transformers import set_seed, EarlyStoppingCallback
 import os
+from custom_train import CustomTrainingArguments, CustomTrainer
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
@@ -21,7 +22,18 @@ def main():
 
     train_dataset, eval_dataset = build_datasets(model.tokenizer, args.model_id, max_length=2048)
 
-    training_args = TrainingArguments(
+    # Preparation before training starts
+    # Copy weights from original head
+    model.confidence_head.weight.data.copy_(model.base_model.lm_head.weight.data)
+
+    # Freeze all parameters except the new head TODO freeze depend on whether to train 2 losses or 1 
+    for param in model.base_model.parameters():
+        param.requires_grad = False
+    for param in model.confidence_head.parameters():
+        param.requires_grad = True
+
+
+    training_args = CustomTrainingArguments(
         output_dir=args.output_dir,
         eval_steps=50,
         eval_strategy='steps',
@@ -47,7 +59,7 @@ def main():
         remove_unused_columns=False,
         )
 
-    trainer = Trainer(
+    trainer = CustomTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
