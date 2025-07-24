@@ -3,60 +3,96 @@ from model_with_sigmoid_head import AutoModelForCausalLMWithSigmoidHead
 from prepare_data import build_datasets
 from transformers import set_seed, EarlyStoppingCallback
 import os
+import time
 from custom_train import CustomTrainingArguments, CustomTrainer
+import yaml
+import torch
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
-    parser.add_argument("--model-id", type=str, required=True, help="Huggingface model ID")
-    parser.add_argument("--data", type=str, required=True, help="Path to the training data file.")
-    parser.add_argument("--output-dir", type=str, required=True, help="Path to the output directory.")
+    parser.add_argument("--config-file-path", type=str, required=True)
+    parser.add_argument("--wandb-run-id", type=str, default=None)
 
     args = parser.parse_args()
     print(args)
 
+    if args.wandb_run_id is None:
+        wandb_run_id = str(time.time_ns())
+        print(
+            "Warning: wandb_run_id is not passed in and will be generated. " \
+            "If you are launching this script with multi GPU training, there will be 2 IDs generated for one run, which is not desired."
+        )
+    else:
+        wandb_run_id = args.wandb_run_id
+    output_dir = f"output/{wandb_run_id}"
+    print(f"Output dir set to {output_dir}")
+
+    os.environ["WANDB_RUN_ID"] = wandb_run_id
     os.environ["WANDB_PROJECT"] = "confidence_head_llm"  
 
     set_seed(0)
 
-    model = AutoModelForCausalLMWithSigmoidHead(args.model_id, device_map="auto")
+    with open(args.config_file_path, 'r') as file:
+        configs = yaml.safe_load(file)
 
-    train_dataset, eval_dataset = build_datasets(model.tokenizer, args.model_id, max_length=2048)
+    # Instead of loading base model to GPUs already with device_map="auto", load to CPU first to do the weight copies. The Trainer will handle moving it to GPUs afterwards
+    model = AutoModelForCausalLMWithSigmoidHead(configs['model_id']) 
 
     # Preparation before training starts
-    # Copy weights from original head
-    model.confidence_head.weight.data.copy_(model.base_model.lm_head.weight.data)
+    # Copy weights from original head (only on main process)
+    if configs['init_sigmoid_head_from_softmax_head']:
+        model.confidence_head.weight.data.copy_(
+            model.base_model.lm_head.weight.data
+        )
 
-    # Freeze all parameters except the new head TODO freeze depend on whether to train 2 losses or 1 
-    for param in model.base_model.parameters():
-        param.requires_grad = False
-    for param in model.confidence_head.parameters():
-        param.requires_grad = True
+    # Freeze all parameters except the new head
+    if configs['freeze_base_model']:
+        for param in model.base_model.parameters():
+            param.requires_grad = False
+        for param in model.confidence_head.parameters():
+            param.requires_grad = True
 
+
+    train_dataset, eval_dataset = build_datasets(
+        configs['train_src_path'], 
+        configs['train_tgt_path'], 
+        configs['dev_src_path'], 
+        configs['dev_tgt_path'], 
+        configs['src_lang'], 
+        configs['tgt_lang'], 
+        model.tokenizer, 
+        max_length=1024
+    )
 
     training_args = CustomTrainingArguments(
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         eval_steps=50,
         eval_strategy='steps',
         save_steps=50,
         save_strategy='steps',
         logging_steps=2,
         logging_strategy='steps',
-        logging_dir=f"{args.output_dir}/logs",
+        logging_dir=f"{output_dir}/logs",
         learning_rate=5e-4,
-        per_device_train_batch_size=10,
-        per_device_eval_batch_size=4,
-        # per_device_train_batch_size=1,
-        # per_device_eval_batch_size=1,
+        # per_device_train_batch_size=10,
+        # per_device_eval_batch_size=4,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=2,
         gradient_accumulation_steps=6,
         weight_decay=0.01,
         save_total_limit=3,
-        # num_train_epochs=10,
         bf16=True, # TODO maybe train in full precision
         push_to_hub=False,
         load_best_model_at_end=True,
         report_to="wandb",
-        run_name="test",
+        run_name=wandb_run_id,
         remove_unused_columns=False,
+        negative_sampling=configs['negative_sampling'],
+        negative_sampling_ratio=configs['negative_sampling_ratio'],
+        negative_sampling_method=configs['negative_sampling_method'], 
+        negative_sampling_avoid_dominant=configs['negative_sampling_avoid_dominant'],
+        weight_positive=configs['weight_positive'],
+        freeze_base_model=configs['freeze_base_model']
         )
 
     trainer = CustomTrainer(
