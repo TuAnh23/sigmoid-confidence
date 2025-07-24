@@ -28,7 +28,9 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
             return_dict_in_generate=True,
         )
 
-        confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
+        with torch.autocast("cuda", enabled=False):
+            # Train head with full precision
+            confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
 
         return {
             "loss": outputs.get('loss'),
