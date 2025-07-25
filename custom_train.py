@@ -116,6 +116,9 @@ class CustomTrainer(Trainer):
         else:
             loss = bce_loss + outputs.get('loss')
 
+        # Overwrite base_model loss with the new loss that consider the sigmoid head
+        outputs['loss'] = loss
+
         return (loss, outputs) if return_outputs else loss
     
 

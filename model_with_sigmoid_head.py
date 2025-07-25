@@ -32,8 +32,6 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
             # Train head with full precision
             confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
 
-        return {
-            "loss": outputs.get('loss'),
-            "logits": outputs.get('logits'),
-            "confidence_logits": confidence_logits
-        }
+        outputs["confidence_logits"] = confidence_logits
+
+        return outputs

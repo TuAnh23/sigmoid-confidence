@@ -87,6 +87,7 @@ def main():
         report_to="wandb",
         run_name=wandb_run_id,
         remove_unused_columns=False,
+        label_names=['labels'],
         negative_sampling=configs['negative_sampling'],
         negative_sampling_ratio=configs['negative_sampling_ratio'],
         negative_sampling_method=configs['negative_sampling_method'], 
