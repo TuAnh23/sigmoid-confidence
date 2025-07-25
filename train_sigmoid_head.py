@@ -10,7 +10,7 @@ import torch
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
-    parser.add_argument("--config-file-path", type=str, required=True)
+    parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
     parser.add_argument("--wandb-run-id", type=str, default=None)
 
     args = parser.parse_args()
@@ -32,8 +32,12 @@ def main():
 
     set_seed(0)
 
-    with open(args.config_file_path, 'r') as file:
-        configs = yaml.safe_load(file)
+    configs = {}
+    for config_path in args.config_file_paths:
+        with open(config_path, 'r') as file:
+            config_part = yaml.safe_load(file)
+            if config_part:
+                configs.update(config_part)
 
     # Instead of loading base model to GPUs already with device_map="auto", load to CPU first to do the weight copies. The Trainer will handle moving it to GPUs afterwards
     model = AutoModelForCausalLMWithSigmoidHead(configs['model_id']) 
@@ -74,8 +78,6 @@ def main():
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
         learning_rate=5e-4,
-        # per_device_train_batch_size=10,
-        # per_device_eval_batch_size=4,
         per_device_train_batch_size=4,
         per_device_eval_batch_size=2,
         gradient_accumulation_steps=6,
