@@ -2,8 +2,11 @@
 
 GPU_TYPE=$1 # H100 A100
 NR_GPUS=$2
+WANDB_RUN_ID=$3  # Can pass in a pre-existing ID to continue training from checkpoint
 
-WANDB_RUN_ID=$(date +%s%N)
+if [ -z "$WANDB_RUN_ID" ]; then
+    WANDB_RUN_ID=$(date +%s%N)
+fi
 
 BATCH_CONFIG="configs/batch_size_${GPU_TYPE}.yaml"
 

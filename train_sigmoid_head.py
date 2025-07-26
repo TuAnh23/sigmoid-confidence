@@ -6,7 +6,7 @@ import os
 import time
 from custom_train import CustomTrainingArguments, CustomTrainer
 import yaml
-import torch
+import wandb
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
@@ -39,6 +39,14 @@ def main():
             if config_part:
                 configs.update(config_part)
 
+    wandb.init(
+        project=os.environ["WANDB_PROJECT"],
+        id=wandb_run_id,
+        config=configs,
+        dir=output_dir,
+        resume="allow"
+    )
+
     # Instead of loading base model to GPUs already with device_map="auto", load to CPU first to do the weight copies. The Trainer will handle moving it to GPUs afterwards
     model = AutoModelForCausalLMWithSigmoidHead(configs['model_id']) 
 
@@ -65,7 +73,7 @@ def main():
         configs['src_lang'], 
         configs['tgt_lang'], 
         model.tokenizer, 
-        max_length=1024
+        max_length=896
     )
 
     training_args = CustomTrainingArguments(
@@ -78,8 +86,8 @@ def main():
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
         learning_rate=5e-4,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=2,
+        per_device_train_batch_size=configs['per_device_train_batch_size'],
+        per_device_eval_batch_size=configs['per_device_eval_batch_size'],
         gradient_accumulation_steps=6,
         weight_decay=0.01,
         save_total_limit=3,
@@ -106,7 +114,11 @@ def main():
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )
 
-    trainer.train()
+    checkpoints = [os.path.join(output_dir, d) for d in os.listdir(output_dir)
+                   if d.startswith("checkpoint-")]
+    resume_from_checkpoint = False if not checkpoints else True
+
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
 
 if __name__ == "__main__":
