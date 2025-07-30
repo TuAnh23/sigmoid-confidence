@@ -5,8 +5,8 @@ from transformers import set_seed, EarlyStoppingCallback
 import os
 import time
 from custom_train import CustomTrainingArguments, CustomTrainer
-import yaml
 import wandb
+from utils import load_yaml_files
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
@@ -32,12 +32,7 @@ def main():
 
     set_seed(0)
 
-    configs = {}
-    for config_path in args.config_file_paths:
-        with open(config_path, 'r') as file:
-            config_part = yaml.safe_load(file)
-            if config_part:
-                configs.update(config_part)
+    configs = load_yaml_files(args.config_file_paths)
 
     wandb.init(
         project=os.environ["WANDB_PROJECT"],
@@ -65,9 +60,16 @@ def main():
             param.requires_grad = True
 
 
-    train_dataset, eval_dataset = build_datasets(
+    train_dataset = build_datasets(
         configs['train_src_path'], 
         configs['train_tgt_path'], 
+        configs['src_lang'], 
+        configs['tgt_lang'], 
+        model.tokenizer, 
+        max_length=896
+    )
+
+    eval_dataset = build_datasets(
         configs['dev_src_path'], 
         configs['dev_tgt_path'], 
         configs['src_lang'], 
@@ -78,17 +80,17 @@ def main():
 
     training_args = CustomTrainingArguments(
         output_dir=output_dir,
-        eval_steps=50,
+        eval_steps=300,
         eval_strategy='steps',
-        save_steps=50,
+        save_steps=300,
         save_strategy='steps',
-        logging_steps=2,
+        logging_steps=10,
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
         learning_rate=5e-4,
         per_device_train_batch_size=configs['per_device_train_batch_size'],
         per_device_eval_batch_size=configs['per_device_eval_batch_size'],
-        gradient_accumulation_steps=6,
+        gradient_accumulation_steps=36,
         weight_decay=0.01,
         save_total_limit=3,
         bf16=True, # TODO maybe train in full precision
@@ -118,7 +120,13 @@ def main():
                    if d.startswith("checkpoint-")]
     resume_from_checkpoint = False if not checkpoints else True
 
+    start_time = time.time()
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    end_time = time.time()
+    training_duration = end_time - start_time
+    # Log training duration to wandb in format "HH:MM:SS"
+    training_duration = time.strftime("%H:%M:%S", time.gmtime(training_duration))
+    wandb.log({"training_duration": training_duration}) 
 
 
 if __name__ == "__main__":

@@ -1,6 +1,55 @@
 import torch
 import os
 import wandb
+import yaml
+import re
+import json
+import itertools
+
+def get_best_checkpoint(output_dir: str, metric: str = "eval_loss", maximize: bool = False):
+    # Get all checkpoint directories
+    checkpoints = [d for d in os.listdir(output_dir) if re.match(r"checkpoint-\d+", d)]
+    if not checkpoints:
+        raise ValueError("No checkpoint directories found in output_dir.")
+
+    # Sort checkpoints by step
+    checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[-1]))
+
+    # Use trainer_state.json from the *last* checkpoint
+    last_ckpt_path = os.path.join(output_dir, checkpoints[-1])
+    trainer_state_path = os.path.join(last_ckpt_path, "trainer_state.json")
+
+    if not os.path.exists(trainer_state_path):
+        raise FileNotFoundError(f"trainer_state.json not found at {trainer_state_path}")
+
+    with open(trainer_state_path, "r") as f:
+        state = json.load(f)
+
+    eval_logs = [log for log in state.get("log_history", []) if metric in log]
+    if not eval_logs:
+        raise ValueError(f"No evaluation logs found with metric '{metric}'")
+
+    # Find best step
+    best_log = max(eval_logs, key=lambda x: x[metric]) if maximize else min(eval_logs, key=lambda x: x[metric])
+    best_step = best_log["step"]
+
+    best_checkpoint_path = os.path.join(output_dir, f"checkpoint-{best_step}")
+    if not os.path.exists(best_checkpoint_path):
+        raise FileNotFoundError(f"Best checkpoint directory not found: {best_checkpoint_path}")
+    
+    print(f"Best checkpoint found at {best_checkpoint_path}.")
+
+    return best_checkpoint_path
+
+
+def load_yaml_files(yaml_file_paths):
+    contents = {}
+    for yaml_file_path in yaml_file_paths:
+        with open(yaml_file_path, 'r') as file:
+            content_part = yaml.safe_load(file)
+            if content_part:
+                contents.update(content_part)
+    return contents
 
 
 def find_dominant(softmax_lprobs, find_dominant_method, p_jump=None, diff_cut=None):
@@ -99,3 +148,50 @@ def find_dominant(softmax_lprobs, find_dominant_method, p_jump=None, diff_cut=No
     # Mask out indices beyond the cut-off point with value -1
     indices = torch.where(mask, indices, -1)
     return indices
+
+
+def check_is_dominant(softmax_lprobs, label_ids, ue_method="sum_dominant_mass", find_dominant_method='difference_jump', p_jump=0.3, diff_cut=0.005):
+    dominant_indices = find_dominant(softmax_lprobs, find_dominant_method, p_jump, diff_cut)  # Shape: [batch_size, nr_tokens, vocab_size]
+
+    # Check if each predicted_id is in the corresponding dominant indices
+    is_dominant = (label_ids.unsqueeze(-1) == dominant_indices).any(dim=-1)  # Shape: [batch_size, nr_tokens]
+
+    if ue_method == "is_dominant":
+        return is_dominant.int()  # Convert to 0/1 format
+    elif ue_method == "sum_dominant_mass":
+        trans_probs = torch.exp(softmax_lprobs)
+        dominant_binary = torch.zeros_like(trans_probs, dtype=torch.uint8)  # Initialize binary tensor
+
+        lists = [list(range(x)) for x in trans_probs.shape[:-1]]
+        if len(lists) > 0:
+            combs = tuple(itertools.product(*lists))
+            for comb in combs:
+                dominant_binary[comb][dominant_indices[comb][dominant_indices[comb] != -1]] = 1
+        else:
+            dominant_binary[dominant_indices[dominant_indices != -1]] = 1
+
+        dominant_mass = (dominant_binary * trans_probs).sum(dim=-1)
+        selected_prob = trans_probs.gather(dim=-1, index=label_ids.unsqueeze(-1)).squeeze(-1)
+        sum_dominant_mass = torch.where(is_dominant, dominant_mass, selected_prob)
+        return sum_dominant_mass
+    else:
+        raise RuntimeError(f"Unknown ue_method {ue_method}")
+
+def find_eos_idx(pred_ids, eos_id):
+    """
+    Find end-of-sentence index to ignore the padding tokens
+    """
+    match_eos = (pred_ids == eos_id).nonzero(as_tuple=True)[0]
+    if match_eos.shape[0] > 0:
+        return match_eos[0]  # First time eos
+    else:
+        return pred_ids.shape[0]
+
+def write_list_to_file(filename, data):
+    """
+    Writes a list to a text file.
+    Each value in the list is written to one line
+    """
+    with open(filename, 'w') as f:
+        for row in data:
+            f.write(row + '\n')

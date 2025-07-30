@@ -8,8 +8,8 @@ def line_pairs(src_file, tgt_file):
         for src, tgt in zip(f_src, f_tgt):
             yield {"input": src.strip(), "target": tgt.strip()}
 
-# Format: instruction + response
-def format_and_tokenize_example(example, src_lang, tgt_lang, tokenizer, max_length=1024):
+# Format for teacher forcing: instruction + response
+def format_and_tokenize_example_for_teacher_forcing(example, src_lang, tgt_lang, tokenizer, max_length=1024):
     full_messages = [
         {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}:"},
         {"role": "assistant", "content": example['target']}
@@ -26,25 +26,38 @@ def format_and_tokenize_example(example, src_lang, tgt_lang, tokenizer, max_leng
     return tokenized_full_prompt
 
 
-# Main function to build datasets
-def build_datasets(train_src_path, train_tgt_path, dev_src_path, dev_tgt_path, src_lang, tgt_lang, tokenizer, max_length=1024):
-    # Wrap with Hugging Face datasets
-    train_dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{train_src_path}", f"{os.environ.get('ROOT_DIR')}/{train_tgt_path}"))
-    eval_dataset  = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{dev_src_path}", f"{os.environ.get('ROOT_DIR')}/{dev_tgt_path}"))
-
-    train_dataset = train_dataset.map(
-        lambda x: format_and_tokenize_example(x, src_lang, tgt_lang, tokenizer, max_length),
-        load_from_cache_file=True,
-        num_proc=100
+# Format for batched inference: instruction only
+def format_and_tokenize_example_for_inference(example, src_lang, tgt_lang, tokenizer, max_length=1024):
+    input_message = [
+        {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}:"},
+    ]
+    tokenized_input = tokenizer.apply_chat_template(
+        input_message, 
+        tokenize=True, 
+        add_generation_prompt=True, 
+        max_length=max_length, 
+        padding="max_length", 
+        truncation=True, 
+        return_dict=True
     )
-    eval_dataset = eval_dataset.map(
-        lambda x: format_and_tokenize_example(x, src_lang, tgt_lang, tokenizer, max_length),
+    return tokenized_input
+
+
+# Main function to build datasets
+def build_datasets(src_path, tgt_path, src_lang, tgt_lang, tokenizer, max_length=1024, teacher_forcing=True):
+    # Wrap with Hugging Face datasets
+    dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
+
+    dataset = dataset.map(
+        lambda x: 
+            format_and_tokenize_example_for_teacher_forcing(x, src_lang, tgt_lang, tokenizer, max_length) 
+            if teacher_forcing
+            else format_and_tokenize_example_for_inference(x, src_lang, tgt_lang, tokenizer, max_length),
         load_from_cache_file=True,
         num_proc=100
     )
 
     # Set format for PyTorch
-    train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    eval_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"] + (["labels"] if teacher_forcing else []))
 
-    return train_dataset, eval_dataset
+    return dataset
