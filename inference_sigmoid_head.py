@@ -5,12 +5,13 @@ import wandb
 from transformers import set_seed
 import argparse
 import os
-from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, write_list_to_file, check_is_dominant
+from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, check_is_dominant
 from prepare_data import build_datasets
 from torch.utils.data import DataLoader
 import time
 from collections import defaultdict
 from tqdm import tqdm 
+import json
 
 
 def main():
@@ -115,6 +116,7 @@ def main():
 
             # Calculate boosted prob of the log softmax
             boosted_prob = check_is_dominant(log_scores, predicted_ids)
+            log_boosted_prob = torch.log(boosted_prob + 1e-10)  # Add small value to avoid log(0)
 
             # Gather the scores of the predicted tokens
             pred_log_scores = torch.gather(log_scores, -1, predicted_ids.unsqueeze(-1)).squeeze(-1)
@@ -137,6 +139,8 @@ def main():
                 results['log_scores'].append(pred_log_scores[batch_item][:end_idx].cpu().tolist())
                 results['entropy'].append(entropy[batch_item][:end_idx].cpu().tolist())
                 results['boosted_prob'].append(boosted_prob[batch_item][:end_idx].cpu().tolist())
+                results['log_boosted_prob'].append(log_boosted_prob[batch_item][:end_idx].cpu().tolist())
+                
 
     end_time = time.time()
     inference_duration = end_time - start_time
@@ -144,17 +148,10 @@ def main():
     inference_duration = time.strftime("%H:%M:%S", time.gmtime(inference_duration))
     wandb.log({"inference_duration": inference_duration}) 
 
-    # Save results to files
+    # Save results to file
     os.makedirs(f"{output_dir}/inference_{configs['dataname']}", exist_ok=True)
-    write_list_to_file(
-        filename=f"{output_dir}/inference_{configs['dataname']}/pred_txt.txt",
-        data=results.pop('pred_txt')
-    )
-    for k, v in results.items():
-        write_list_to_file(
-            filename=f"{output_dir}/inference_{configs['dataname']}/{k}.txt",
-            data=[' '.join([str(x) for x in l]) for l in v]
-        )
+    with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'w') as f:
+        json.dump(results, f, indent=4)
 
 
 if __name__ == "__main__":

@@ -186,12 +186,3 @@ def find_eos_idx(pred_ids, eos_id):
         return match_eos[0]  # First time eos
     else:
         return pred_ids.shape[0]
-
-def write_list_to_file(filename, data):
-    """
-    Writes a list to a text file.
-    Each value in the list is written to one line
-    """
-    with open(filename, 'w') as f:
-        for row in data:
-            f.write(row + '\n')
