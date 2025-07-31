@@ -137,9 +137,9 @@ def main():
                 results['confidence_log_scores'].append(pred_confidence_log_scores[batch_item][:end_idx].cpu().tolist())
                 results['scores'].append(pred_scores[batch_item][:end_idx].cpu().tolist())
                 results['log_scores'].append(pred_log_scores[batch_item][:end_idx].cpu().tolist())
-                results['entropy'].append(entropy[batch_item][:end_idx].cpu().tolist())
-                results['boosted_prob'].append(boosted_prob[batch_item][:end_idx].cpu().tolist())
-                results['log_boosted_prob'].append(log_boosted_prob[batch_item][:end_idx].cpu().tolist())
+                results['entropy_scores'].append(entropy[batch_item][:end_idx].cpu().tolist())
+                results['boosted_prob_scores'].append(boosted_prob[batch_item][:end_idx].cpu().tolist())
+                results['log_boosted_prob_scores'].append(log_boosted_prob[batch_item][:end_idx].cpu().tolist())
                 
 
     end_time = time.time()

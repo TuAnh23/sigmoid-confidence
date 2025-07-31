@@ -18,7 +18,12 @@ if [[ ${NR_GPUS} == 1 ]]; then
 
     echo "Inference starts..."
     python inference_sigmoid_head.py \
-        --config-file-path "configs/train_head_only.yaml" ${BATCH_CONFIG} \
+        --config-file-path "configs/inference.yaml" ${BATCH_CONFIG} \
+        --wandb-run-id ${WANDB_RUN_ID}
+
+    echo "Evaluation starts..."
+    python evaluate.py \
+        --config-file-path "configs/inference.yaml" \
         --wandb-run-id ${WANDB_RUN_ID}
 else
     echo "Training starts..."
@@ -32,7 +37,12 @@ else
     accelerate launch \
         --num_processes=${NR_GPUS} \
     inference_sigmoid_head.py \
-        --config-file-path "configs/train_head_only.yaml" ${BATCH_CONFIG} \
+        --config-file-path "configs/inference.yaml" ${BATCH_CONFIG} \
+        --wandb-run-id ${WANDB_RUN_ID}
+
+    echo "Evaluation starts..."
+    python evaluate.py \
+        --config-file-path "configs/inference.yaml" \
         --wandb-run-id ${WANDB_RUN_ID}
 fi
 

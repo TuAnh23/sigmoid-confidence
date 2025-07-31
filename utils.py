@@ -186,3 +186,33 @@ def find_eos_idx(pred_ids, eos_id):
         return match_eos[0]  # First time eos
     else:
         return pred_ids.shape[0]
+    
+def load_text_file(file_path):
+    """
+    Load text file into a list, each item is a line of the file
+    """
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+        lines = [line.strip() for line in lines]
+    return lines
+
+def load_comet_model(comet_model_root_path=None, model_name="wmt22-cometkiwi-da"):
+    from comet import download_model, load_from_checkpoint
+
+    if model_name in ["wmt22-cometkiwi-da", "wmt20-comet-qe-da", "wmt22-comet-da", "wmt23-cometkiwi-da-xl", "XCOMET-XL"]:
+        model_path = download_model(f"Unbabel/{model_name}")
+    else:
+        model_path = f"{comet_model_root_path}/{model_name}/checkpoints/model.ckpt"
+    model = load_from_checkpoint(model_path)
+    return model
+
+def format_for_comet(src, mt, ref=None):
+    if ref is not None:
+        return [{'src': x, 'mt': y, 'ref': z} for x, y, z in zip(src, mt, ref)]
+    else:
+        return [{'src': x, 'mt': y} for x, y in zip(src, mt)]
+
+def write_text_file(lines, file_path):
+    with open(file_path, 'w') as f:
+        for line in lines:
+            f.write(f"{line}\n")

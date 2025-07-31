@@ -87,7 +87,7 @@ def main():
         logging_steps=10,
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
-        learning_rate=5e-4,
+        learning_rate=1e-5,  # 5e-4,
         per_device_train_batch_size=configs['per_device_train_batch_size'],
         per_device_eval_batch_size=configs['per_device_eval_batch_size'],
         gradient_accumulation_steps=36,
