@@ -80,9 +80,9 @@ def main():
 
     training_args = CustomTrainingArguments(
         output_dir=output_dir,
-        eval_steps=300,
+        eval_steps=configs['eval_steps'],
         eval_strategy='steps',
-        save_steps=300,
+        save_steps=configs['save_steps'],
         save_strategy='steps',
         logging_steps=10,
         logging_strategy='steps',
@@ -90,7 +90,7 @@ def main():
         learning_rate=1e-5,  # 5e-4,
         per_device_train_batch_size=configs['per_device_train_batch_size'],
         per_device_eval_batch_size=configs['per_device_eval_batch_size'],
-        gradient_accumulation_steps=36,
+        gradient_accumulation_steps=configs['gradient_accumulation_steps'],
         weight_decay=0.01,
         save_total_limit=3,
         bf16=True, # TODO maybe train in full precision
