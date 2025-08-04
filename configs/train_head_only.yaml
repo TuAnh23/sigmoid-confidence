@@ -14,4 +14,4 @@ negative_sampling: True
 negative_sampling_ratio: 10
 negative_sampling_method: "token_freq,softmax_probs"
 negative_sampling_avoid_dominant: True
-weight_positive: "balance"
+weight_positive: "None"  # "balance"

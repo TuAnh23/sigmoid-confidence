@@ -21,6 +21,7 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
         )
 
     def forward(self, *args, **kwargs):
+        # TODO: for efficiency, consider cast base model to bfloat16, and only train head with full
         outputs = self.base_model(
             *args,
             **kwargs,

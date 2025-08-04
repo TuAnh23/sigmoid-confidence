@@ -61,7 +61,7 @@ def main():
         teacher_forcing=False
     )
 
-    test_dataloader = DataLoader(test_dataset, batch_size=configs['per_device_train_batch_size']*2, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=configs['per_device_test_batch_size'], shuffle=False)
 
     # 3. Run inference
     # Initialize a dict to store results, where the default values are empty lists
