@@ -52,12 +52,13 @@ def main():
 
     # 2. Prepare test data
     test_dataset = build_datasets(
-        configs['test_src_path'], 
-        configs['test_tgt_path'], 
-        configs['src_lang'], 
-        configs['tgt_lang'], 
-        model.tokenizer, 
-        max_length=configs['max_length']//2, # since this is only the input prompt
+        dataname=configs.get('dataname'),
+        tokenizer=model.tokenizer, 
+        max_length=configs.get('max_length')//2, # since this is only the input prompt
+        src_path=configs.get('test_src_path'),
+        tgt_path=configs.get('test_tgt_path'),
+        src_lang=configs.get('src_lang'),
+        tgt_lang=configs.get('tgt_lang'),
         teacher_forcing=False
     )
 
@@ -144,8 +145,8 @@ def main():
 
     end_time = time.time()
     inference_duration = end_time - start_time
-    # Log training duration to wandb in format "HH:MM:SS"
-    inference_duration = time.strftime("%H:%M:%S", time.gmtime(inference_duration))
+    # Log training duration to wandb in format "DD-HH:MM:SS"
+    inference_duration = f"{inference_duration // 86400:02d}-{time.strftime('%H:%M:%S', time.gmtime(inference_duration))}"
     wandb.log({"inference_duration": inference_duration}) 
 
     # Save results to file

@@ -1,0 +1,10 @@
+train_src_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/train.5M.dedup.en"
+train_tgt_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/train.5M.dedup.de"
+dev_src_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/dev.en"
+dev_tgt_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/dev.de"
+test_src_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/test.en"
+test_tgt_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/test.de"
+src_lang: "English"
+tgt_lang: "German"
+dataname: "ParaCrawl"
+max_length: 896

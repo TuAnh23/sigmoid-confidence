@@ -43,17 +43,17 @@ def main():
     )
 
     # Instead of loading base model to GPUs already with device_map="auto", load to CPU first to do the weight copies. The Trainer will handle moving it to GPUs afterwards
-    model = AutoModelForCausalLMWithSigmoidHead(configs['model_id']) 
+    model = AutoModelForCausalLMWithSigmoidHead(configs.get('model_id')) 
 
     # Preparation before training starts
     # Copy weights from original head (only on main process)
-    if configs['init_sigmoid_head_from_softmax_head']:
+    if configs.get('init_sigmoid_head_from_softmax_head'):
         model.confidence_head.weight.data.copy_(
             model.base_model.lm_head.weight.data
         )
 
     # Freeze all parameters except the new head
-    if configs['freeze_base_model']:
+    if configs.get('freeze_base_model'):
         for param in model.base_model.parameters():
             param.requires_grad = False
         for param in model.confidence_head.parameters():
@@ -61,51 +61,53 @@ def main():
 
 
     train_dataset = build_datasets(
-        configs['train_src_path'], 
-        configs['train_tgt_path'], 
-        configs['src_lang'], 
-        configs['tgt_lang'], 
-        model.tokenizer, 
-        max_length=896
+        dataname=configs.get('dataname'),
+        tokenizer=model.tokenizer, 
+        max_length=configs.get('max_length'),
+        src_path=configs.get('train_src_path'), 
+        tgt_path=configs.get('train_tgt_path'), 
+        src_lang=configs.get('src_lang'), 
+        tgt_lang=configs.get('tgt_lang'), 
     )
 
     eval_dataset = build_datasets(
-        configs['dev_src_path'], 
-        configs['dev_tgt_path'], 
-        configs['src_lang'], 
-        configs['tgt_lang'], 
-        model.tokenizer, 
-        max_length=896
+        dataname=configs.get('dataname'),
+        tokenizer=model.tokenizer, 
+        max_length=configs.get('max_length'),
+        src_path=configs.get('dev_src_path'),
+        tgt_path=configs.get('dev_tgt_path'),
+        src_lang=configs.get('src_lang'),
+        tgt_lang=configs.get('tgt_lang'),
     )
 
     training_args = CustomTrainingArguments(
         output_dir=output_dir,
-        eval_steps=configs['eval_steps'],
+        eval_steps=configs.get('eval_steps'),
         eval_strategy='steps',
-        save_steps=configs['save_steps'],
+        save_steps=configs.get('save_steps'),
         save_strategy='steps',
         logging_steps=10,
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
-        learning_rate=1e-5,  # 5e-4,
-        per_device_train_batch_size=configs['per_device_train_batch_size'],
-        per_device_eval_batch_size=configs['per_device_eval_batch_size'],
-        gradient_accumulation_steps=configs['gradient_accumulation_steps'],
+        learning_rate=1e-5,
+        per_device_train_batch_size=configs.get('per_device_train_batch_size'),
+        per_device_eval_batch_size=configs.get('per_device_eval_batch_size'),
+        gradient_accumulation_steps=configs.get('gradient_accumulation_steps'),
         weight_decay=0.01,
         save_total_limit=3,
-        bf16=True, # TODO maybe train in full precision
+        bf16=True,
         push_to_hub=False,
         load_best_model_at_end=True,
         report_to="wandb",
         run_name=wandb_run_id,
         remove_unused_columns=False,
         label_names=['labels'],
-        negative_sampling=configs['negative_sampling'],
-        negative_sampling_ratio=configs['negative_sampling_ratio'],
-        negative_sampling_method=configs['negative_sampling_method'], 
-        negative_sampling_avoid_dominant=configs['negative_sampling_avoid_dominant'],
-        weight_positive=configs['weight_positive'],
-        freeze_base_model=configs['freeze_base_model']
+        negative_sampling=configs.get('negative_sampling'),
+        negative_sampling_ratio=configs.get('negative_sampling_ratio'),
+        negative_sampling_method=configs.get('negative_sampling_method'), 
+        negative_sampling_avoid_dominant=configs.get('negative_sampling_avoid_dominant'),
+        weight_positive=configs.get('weight_positive'),
+        freeze_base_model=configs.get('freeze_base_model'),
         )
 
     trainer = CustomTrainer(
@@ -124,8 +126,8 @@ def main():
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     end_time = time.time()
     training_duration = end_time - start_time
-    # Log training duration to wandb in format "HH:MM:SS"
-    training_duration = time.strftime("%H:%M:%S", time.gmtime(training_duration))
+    # Log training duration to wandb in format "DD-HH:MM:SS"
+    training_duration = f"{training_duration // 86400:02d}-{time.strftime('%H:%M:%S', time.gmtime(training_duration))}"
     wandb.log({"training_duration": training_duration}) 
 
 

@@ -114,6 +114,8 @@ class CustomTrainer(Trainer):
         if self.args.freeze_base_model:
             loss = bce_loss
         else:
+            # TODO: check the scale of the two losses
+            breakpoint()
             loss = bce_loss + outputs.get('loss')
 
         # Overwrite base_model loss with the new loss that consider the sigmoid head
@@ -138,6 +140,7 @@ class CustomTrainer(Trainer):
         elif self.args.negative_sampling_method == "token_freq":
             sampling_distribution = self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
         elif self.args.negative_sampling_method == "token_freq,softmax_probs":
+            # TODO Should we do product or sum here?
             sampling_distribution = softmax_probs + self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
         else:
             raise RuntimeError(f"Unknown negative sampling method {self.args.negative_sampling_method}")

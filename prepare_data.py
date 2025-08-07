@@ -44,20 +44,23 @@ def format_and_tokenize_example_for_inference(example, src_lang, tgt_lang, token
 
 
 # Main function to build datasets
-def build_datasets(src_path, tgt_path, src_lang, tgt_lang, tokenizer, max_length=1024, teacher_forcing=True):
-    # Wrap with Hugging Face datasets
-    dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
+def build_datasets(dataname, tokenizer, max_length=1024, src_path=None, tgt_path=None, src_lang=None, tgt_lang=None, teacher_forcing=True):
+    if dataname == "ParaCrawl":
+        # Wrap with Hugging Face datasets
+        dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
 
-    dataset = dataset.map(
-        lambda x: 
-            format_and_tokenize_example_for_teacher_forcing(x, src_lang, tgt_lang, tokenizer, max_length) 
-            if teacher_forcing
-            else format_and_tokenize_example_for_inference(x, src_lang, tgt_lang, tokenizer, max_length),
-        load_from_cache_file=True,
-        num_proc=100
-    )
+        dataset = dataset.map(
+            lambda x: 
+                format_and_tokenize_example_for_teacher_forcing(x, src_lang, tgt_lang, tokenizer, max_length) 
+                if teacher_forcing
+                else format_and_tokenize_example_for_inference(x, src_lang, tgt_lang, tokenizer, max_length),
+            load_from_cache_file=True,
+            num_proc=100
+        )
 
-    # Set format for PyTorch
-    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"] + (["labels"] if teacher_forcing else []))
+        # Set format for PyTorch
+        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"] + (["labels"] if teacher_forcing else []))
+    else:
+        raise NotImplementedError(f"Not yet implement data processing for {dataname}")
 
     return dataset

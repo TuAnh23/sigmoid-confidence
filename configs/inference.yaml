@@ -1,12 +1,4 @@
 model_id: "Unbabel/TowerInstruct-7B-v0.2" # "Unbabel/TowerInstruct-7B-v0.2" "meta-llama/Llama-3.2-1B-Instruct"
-test_src_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/test.en"
-test_tgt_path: "fairseq/examples/confidence_aware_ssl/data/ParaCrawl/test.de"
-src_lang: "English"
-tgt_lang: "German"
-dataname: "ParaCrawl"
-max_length: 896
-
 human_da_path: ""
 comet_qe_baseline: "wmt22-cometkiwi-da"
 comet_ref_based: "XCOMET-XL"
-
