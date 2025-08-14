@@ -4,7 +4,7 @@ GPU_TYPE=$1 # H100 A100
 NR_GPUS=$2
 TRAIN_CONFIG=$3  # "configs/train_head_only.yaml"
 WANDB_RUN_ID=$4  # Can pass in a pre-existing ID to continue training from checkpoint
-TRAIN_DATA_CONFIG="configs/paracrawl_data.yaml"  # "configs/towerblocks_data.yaml"
+TRAIN_DATA_CONFIG="configs/towerblocks_data.yaml"  # "configs/paracrawl_data.yaml" "configs/towerblocks_data.yaml"
 TEST_DATA_CONFIG="configs/paracrawl_data.yaml"
 
 if [ -z "$WANDB_RUN_ID" ]; then
@@ -31,7 +31,7 @@ if [[ ${NR_GPUS} == 1 ]]; then
 
     echo "Evaluation starts..."
     python evaluate.py \
-        --config-file-path ${TEST_DATA_CONFIG} \
+        --config-file-path "configs/inference.yaml" ${TEST_DATA_CONFIG} \
         --wandb-run-id ${WANDB_RUN_ID}
 else
     echo "Training starts..."
@@ -50,7 +50,7 @@ else
 
     echo "Evaluation starts..."
     python evaluate.py \
-        --config-file-path ${TEST_DATA_CONFIG} \
+        --config-file-path "configs/inference.yaml" ${TEST_DATA_CONFIG} \
         --wandb-run-id ${WANDB_RUN_ID}
 fi
 

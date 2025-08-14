@@ -144,7 +144,6 @@ class CustomTrainer(Trainer):
             sampling_distribution = softmax_probs + self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
         else:
             raise RuntimeError(f"Unknown negative sampling method {self.args.negative_sampling_method}")
-        
 
         if self.args.negative_sampling_avoid_dominant:
             dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, diff_cut=0.005)

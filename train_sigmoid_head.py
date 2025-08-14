@@ -68,6 +68,7 @@ def main():
         tgt_path=configs.get('train_tgt_path'), 
         src_lang=configs.get('src_lang'), 
         tgt_lang=configs.get('tgt_lang'), 
+        split='train'
     )
 
     eval_dataset = build_datasets(
@@ -78,6 +79,7 @@ def main():
         tgt_path=configs.get('dev_tgt_path'),
         src_lang=configs.get('src_lang'),
         tgt_lang=configs.get('tgt_lang'),
+        split='dev'
     )
 
     training_args = CustomTrainingArguments(
@@ -127,7 +129,7 @@ def main():
     end_time = time.time()
     training_duration = end_time - start_time
     # Log training duration to wandb in format "DD-HH:MM:SS"
-    training_duration = f"{training_duration // 86400:02d}-{time.strftime('%H:%M:%S', time.gmtime(training_duration))}"
+    training_duration = f"{int(training_duration // 86400):02d}-{time.strftime('%H:%M:%S', time.gmtime(training_duration))}"
     wandb.log({"training_duration": training_duration}) 
 
 

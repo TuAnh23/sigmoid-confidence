@@ -2,3 +2,4 @@ set_env_and_paths*
 code_to_server.sh
 analysis/*
 .DS_Store
+copy_head.py
