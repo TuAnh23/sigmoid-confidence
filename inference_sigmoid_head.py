@@ -147,7 +147,7 @@ def main():
     inference_duration = end_time - start_time
     # Log training duration to wandb in format "DD-HH:MM:SS"
     inference_duration = f"{int(inference_duration // 86400):02d}-{time.strftime('%H:%M:%S', time.gmtime(inference_duration))}"
-    wandb.log({"inference_duration": inference_duration}) 
+    wandb.log({f"{configs['dataname']}/inference_duration": inference_duration}) 
 
     # Save results to file
     os.makedirs(f"{output_dir}/inference_{configs['dataname']}", exist_ok=True)

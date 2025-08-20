@@ -1,0 +1,4 @@
+dataname: "google/wmt24pp|en-de_DE"
+src_lang: "English"
+tgt_lang: "German"
+max_length: 2048

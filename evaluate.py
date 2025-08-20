@@ -47,17 +47,17 @@ def token_to_sentence_scores(token_level_scores, aggregate):
         raise RuntimeError(f"Invalid value for aggregate: {aggregate}.")
     return sentence_level_scores
 
-def log_correlations(qe_output, gold_quality, qe_name, agg=""):
+def log_correlations(dataname, qe_output, gold_quality, qe_name, agg=""):
     if len(qe_output) == 0:
         return
     under_confidence, over_confidence = under_over_confidence_measure(gold_quality, qe_output)
     wandb.log(
         {
-            f"{qe_name}{agg}/sent_level_pearsonr": pearsonr(qe_output, gold_quality)[0],
-            f"{qe_name}{agg}/sent_level_spearmanr": spearmanr(qe_output, gold_quality)[0],
-            f"{qe_name}{agg}/sent_level_kendalltau": kendalltau(qe_output, gold_quality)[0],
-            f"{qe_name}{agg}/sent_level_under_confidence": under_confidence,
-            f"{qe_name}{agg}/sent_level_over_confidence": over_confidence
+            f"{dataname}_{qe_name}{agg}/sent_level_pearsonr": pearsonr(qe_output, gold_quality)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_spearmanr": spearmanr(qe_output, gold_quality)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_kendalltau": kendalltau(qe_output, gold_quality)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_under_confidence": under_confidence,
+            f"{dataname}_{qe_name}{agg}/sent_level_over_confidence": over_confidence
         }
     )
 
@@ -123,7 +123,7 @@ def main():
             ).scores
             write_text_file(qe_output, cache_path)
 
-    log_correlations(qe_output, gold_quality, configs['comet_qe_baseline'])
+    log_correlations(configs['dataname'], qe_output, gold_quality, configs['comet_qe_baseline'])
 
     # Eval scores from model inference
     for k, v in results.items():
@@ -131,11 +131,11 @@ def main():
             if 'log' in k:
                 for aggregate in ["sum", "mean"]:
                     qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
-                    log_correlations(qe_output, gold_quality, k, aggregate)
+                    log_correlations(configs['dataname'], qe_output, gold_quality, k, aggregate)
             else:
                 for aggregate in ["prod", "mean"]:
                     qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
-                    log_correlations(qe_output, gold_quality, k, aggregate)
+                    log_correlations(configs['dataname'], qe_output, gold_quality, k, aggregate)
     
 
 if __name__ == "__main__":

@@ -34,6 +34,11 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
             {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}:"},
             {"role": "assistant", "content": example['target']}
         ]
+    elif "google/wmt24pp" in dataname:
+        chat_messages = [
+            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['source']}.\n{tgt_lang}:"},
+            {"role": "assistant", "content": example['target']}
+        ]
     elif dataname == "Unbabel/TowerBlocks-v0.2":
         chat_messages = []
         for turn in example['conversations']:
@@ -134,13 +139,17 @@ def build_datasets(
         sample_5000 = general_mt_clean_rows.select(range(5000))
         leftover_general_mt_clean = general_mt_clean_rows.select(range(5000, len(general_mt_clean_rows)))
         non_general_mt_clean = dataset.filter(lambda x: x["dataset"] != "general_mt_clean")
-        rest = concatenate_datasets([non_general_mt_clean, leftover_general_mt_clean])
+        rest = concatenate_datasets([leftover_general_mt_clean, non_general_mt_clean])
 
         if split == "dev":
             dataset = sample_5000
         else:
             dataset = rest
         dataset = dataset.filter(has_no_none_values)
+    elif "google/wmt24pp" in dataname:
+        data_repo, lang_pairs = dataname.split('|')
+        dataset = load_dataset(data_repo, lang_pairs)
+        dataset = dataset['train'].filter(lambda x: not x["is_bad_source"])
     else:
         raise NotImplementedError(f"Not yet implement data processing for {dataname}")
     
