@@ -59,6 +59,8 @@ class CustomTrainer(Trainer):
             self.token_counter[token_id] = count
         # Zero out pad token
         self.token_counter[self.model.tokenizer.pad_token_id] = 0
+        # Normalize to get a freq distribution 
+        self.token_counter = self.token_counter / self.token_counter.sum()
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # Get the output logits
