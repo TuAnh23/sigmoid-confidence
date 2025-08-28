@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
     parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
     parser.add_argument("--wandb-run-id", type=str, required=True)
+    parser.add_argument("--manual-inspect", action='store_true', help="If set, will enter a pdb session in every generation step for manual inspection.")
 
     args = parser.parse_args()
     print(args)
@@ -141,6 +142,21 @@ def main():
                 results['entropy_scores'].append(entropy[batch_item][:end_idx].cpu().tolist())
                 results['boosted_prob_scores'].append(boosted_prob[batch_item][:end_idx].cpu().tolist())
                 results['log_boosted_prob_scores'].append(log_boosted_prob[batch_item][:end_idx].cpu().tolist())
+
+
+                if args.manual_inspect:
+                    for j in range(end_idx):
+                        print(f"SOURCE: {model.tokenizer.decode(batch['input_ids'][batch_item], skip_special_tokens=True)}")
+                        print(f"PRED: {model.tokenizer.decode(predicted_ids[batch_item], skip_special_tokens=True)}")
+                        print(f"PREFIX PRED: {model.tokenizer.decode(predicted_ids[batch_item][:j], skip_special_tokens=True)}")
+                        print(f"TOKEN: {results['pred_tokenized_txt'][-1][j]}")
+                        print(f"CONFIDENCE SCORE: {results['confidence_scores'][-1][j]}")
+                        print(f"PROB SCORE: {results['scores'][-1][j]}")
+                        print(f"Nr conf > 0.8: {(confidence_log_scores.exp()[batch_item][j] > 0.8).sum()}")
+                        print(f"Top k tokens by main head: {model.tokenizer.convert_ids_to_tokens(log_scores.exp()[batch_item][j].topk(k=10).indices)}")
+                        print(f"Top k tokens by conf head: {model.tokenizer.convert_ids_to_tokens(confidence_log_scores.exp()[batch_item][j].topk(k=10).indices)}")
+                        print(f"Conf scores of main head top k: {confidence_log_scores.exp()[batch_item][j][log_scores.exp()[batch_item][j].topk(k=10).indices]}")
+                        breakpoint()
                 
 
     end_time = time.time()
