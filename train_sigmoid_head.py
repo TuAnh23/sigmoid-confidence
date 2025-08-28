@@ -91,7 +91,7 @@ def main():
         logging_steps=10,
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
-        learning_rate=1e-5,
+        learning_rate=5e-5, # 1e-5,
         per_device_train_batch_size=configs.get('per_device_train_batch_size'),
         per_device_eval_batch_size=configs.get('per_device_eval_batch_size'),
         gradient_accumulation_steps=configs.get('gradient_accumulation_steps'),
@@ -108,6 +108,7 @@ def main():
         negative_sampling_ratio=configs.get('negative_sampling_ratio'),
         negative_sampling_method=configs.get('negative_sampling_method'), 
         negative_sampling_avoid_dominant=configs.get('negative_sampling_avoid_dominant'),
+        temperature_neg_sampling_softmax=configs.get('temperature_neg_sampling_softmax'),
         weight_positive=configs.get('weight_positive'),
         freeze_base_model=configs.get('freeze_base_model'),
         )

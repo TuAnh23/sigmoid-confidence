@@ -26,7 +26,6 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
             *args,
             **kwargs,
             output_hidden_states=True,
-            return_dict_in_generate=True,
         )
 
         with torch.autocast("cuda", enabled=False):
@@ -34,5 +33,7 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
             confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
 
         outputs["confidence_logits"] = confidence_logits
+
+        outputs['hidden_states'] = []  # remove to save memory
 
         return outputs

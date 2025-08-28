@@ -12,6 +12,7 @@ class CustomTrainingArguments(TrainingArguments):
         negative_sampling_ratio=10,
         negative_sampling_method="random", 
         negative_sampling_avoid_dominant=True,
+        temperature_neg_sampling_softmax=1.0,
         weight_positive="balance",
         freeze_base_model=True,
         **kwargs
@@ -21,6 +22,7 @@ class CustomTrainingArguments(TrainingArguments):
         self.negative_sampling_ratio = negative_sampling_ratio
         self.negative_sampling_method = negative_sampling_method
         self.negative_sampling_avoid_dominant = negative_sampling_avoid_dominant
+        self.temperature_neg_sampling_softmax = temperature_neg_sampling_softmax,
         self.weight_positive = weight_positive
         self.freeze_base_model = freeze_base_model
 
@@ -133,17 +135,19 @@ class CustomTrainer(Trainer):
         softmax_probs = torch.exp(softmax_lprobs)
 
         sampled_mask = torch.zeros_like(labels, dtype=torch.bool)
-        if self.args.negative_sampling_method == "random":
-            sampling_distribution = torch.ones_like(labels, dtype=torch.float)
-        elif self.args.negative_sampling_method == "softmax_probs":
-            sampling_distribution = softmax_probs
-        elif self.args.negative_sampling_method == "token_freq":
-            sampling_distribution = self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
-        elif self.args.negative_sampling_method == "token_freq,softmax_probs":
-            # TODO Should we do product or sum here?
-            sampling_distribution = softmax_probs + self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
-        else:
+        sampling_distributions = []
+        if "random" in self.args.negative_sampling_method:
+            sampling_distributions.append(torch.ones_like(labels, dtype=torch.float))
+        if "softmax_probs" in self.args.negative_sampling_method:
+            sampling_distributions.append(torch.nn.functional.softmax(softmax_lprobs / self.args.temperature_neg_sampling_softmax, dim=-1))
+            # sampling_distributions.append(softmax_probs)
+        if "token_freq" in self.args.negative_sampling_method:
+            sampling_distributions.append(self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1))
+        # elif self.args.negative_sampling_method == "token_freq,softmax_probs":
+        #     sampling_distribution = softmax_probs + self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
+        if len(sampling_distributions) == 0:
             raise RuntimeError(f"Unknown negative sampling method {self.args.negative_sampling_method}")
+        
 
         if self.args.negative_sampling_avoid_dominant:
             dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, diff_cut=0.005)
@@ -158,18 +162,13 @@ class CustomTrainer(Trainer):
             col_indices = dominant_indices[valid_mask]
 
             # Don't sample the dominant tokens as negative samples, since we don't know whether they are viable translation options
-            sampling_distribution[row_indices, col_indices] = 0
+            for sampling_distribution in sampling_distributions:
+                sampling_distribution[row_indices, col_indices] = 0
 
+
+        # Combine sampling distributions by adding them up
+        sampling_distribution = torch.stack(sampling_distributions).sum(dim=0)
         sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
-        
-        # # Sampling based on token freq more efficently
-        # self.topk_freq_normalized = self.topk_freq_normalized.to(softmax_probs)
-        # self.topk_freq_idx = self.topk_freq_idx.to(softmax_probs)
-        # sampled_positions = torch.multinomial(
-        #     input=self.topk_freq_normalized.expand(softmax_probs.size(0), -1),
-        #     num_samples=self.args.negative_sampling_ratio, replacement=False
-        # )
-        # sampled_positions = self.topk_freq_idx[sampled_positions].long()
 
         sampled_mask.scatter_(dim=-1, index=sampled_positions, value=True)
         del sampled_positions

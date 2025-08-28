@@ -6,6 +6,7 @@ from transformers import set_seed
 from utils import load_yaml_files, load_text_file, load_comet_model, format_for_comet, write_text_file
 import json
 from scipy.stats import pearsonr, spearmanr, kendalltau
+from prepare_data import build_datasets
 
 
 def min_max_scale(arr):
@@ -87,8 +88,17 @@ def main():
     )
 
     # Load data
-    src = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs['test_src_path']}")
-    ref = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs['test_tgt_path']}")
+    test_dataset = build_datasets(
+        dataname=configs.get('dataname'),
+        src_path=configs.get('test_src_path'),
+        tgt_path=configs.get('test_tgt_path'),
+        src_lang=configs.get('src_lang'),
+        tgt_lang=configs.get('tgt_lang'),
+        raw_text_string=True
+    )
+
+    src = list(test_dataset['src'])
+    ref = list(test_dataset['ref'])
 
     # Load inference results
     with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'r') as f:
