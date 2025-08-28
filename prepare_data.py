@@ -112,6 +112,22 @@ def format_and_tokenize_example_for_inference(example, dataname, src_lang, tgt_l
     )
     return tokenized_input
 
+def format_raw_strings(example, dataname):
+    if dataname == "ParaCrawl":
+        formatted_example = {
+            'src': example['input'],
+            'ref': example['target']
+        }
+    elif "google/wmt24pp" in dataname:
+        formatted_example = {
+            'src': example['source'],
+            'ref': example['target']
+        }
+    else:
+        raise NotImplementedError
+    
+    return formatted_example
+
 
 def has_no_none_values(example):
     for turn in example["conversations"]:
@@ -122,9 +138,10 @@ def has_no_none_values(example):
 
 # Main function to build datasets
 def build_datasets(
-        dataname, tokenizer, max_length=1024, teacher_forcing=True, # Args used by all datasets
+        dataname, tokenizer=None, max_length=1024, teacher_forcing=True, # Args used by all datasets
         src_path=None, tgt_path=None, src_lang=None, tgt_lang=None, # Args used by self-loaded data
         split=None, # Args used by huggingface dataset
+        raw_text_string=False,  # Return raw text strings with (src, ref) entries, instead of formatted and tokenized input samples
     ):
     if dataname == "ParaCrawl":
         # Wrap with Hugging Face datasets
@@ -153,16 +170,24 @@ def build_datasets(
     else:
         raise NotImplementedError(f"Not yet implement data processing for {dataname}")
     
-    dataset = dataset.map(
-        lambda x: 
-            format_and_tokenize_example_for_teacher_forcing(x, dataname, src_lang, tgt_lang, tokenizer, max_length) 
-            if teacher_forcing
-            else format_and_tokenize_example_for_inference(x, dataname, src_lang, tgt_lang, tokenizer, max_length),
-        load_from_cache_file=True,
-        num_proc=100
-    )
+    if not raw_text_string:
+        dataset = dataset.map(
+            lambda x: 
+                format_and_tokenize_example_for_teacher_forcing(x, dataname, src_lang, tgt_lang, tokenizer, max_length) 
+                if teacher_forcing
+                else format_and_tokenize_example_for_inference(x, dataname, src_lang, tgt_lang, tokenizer, max_length),
+            load_from_cache_file=True,
+            num_proc=100
+        )
 
-    # Set format for PyTorch
-    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"] + (["labels"] if teacher_forcing else []))
+        # Set format for PyTorch
+        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"] + (["labels"] if teacher_forcing else []))
+    else:
+        dataset = dataset.map(
+            lambda x: format_raw_strings(x, dataname),
+            load_from_cache_file=True,
+            num_proc=100,
+            remove_columns=dataset.column_names
+        )
 
     return dataset
