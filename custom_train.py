@@ -3,6 +3,34 @@ import torch
 from utils import find_dominant
 from collections import Counter
 from tqdm import tqdm
+import numpy as np
+
+
+def compute_metrics(eval_pred, pad_token_id):
+    # Huggingface trainer's `prediction_step` function turn the dict output by model forward() into a tuple
+    # So in our case, `eval_pred.predictions` is a size-3 tuple, containing the logits, hidden_states, confidence_logits (verified)
+    labels = eval_pred.label_ids
+    confidence_scores = eval_pred.predictions[2]
+
+    # Do proper shifting for next word prediction
+    confidence_scores = confidence_scores[..., :-1, :]
+    confidence_scores = confidence_scores.reshape(-1, confidence_scores.shape[-1])  # Reshape to [B*T,vocab_size]
+    confidence_scores = -np.logaddexp(0, -confidence_scores)
+    labels = labels[..., 1:]
+    labels = labels.reshape(-1)
+    mask = labels != pad_token_id  
+    labels = np.eye(confidence_scores.shape[-1])[labels]
+
+    # Flatten for binary classification
+    preds = (confidence_scores > 0.9).astype(int)
+    labels = labels.astype(int)
+    preds = preds[mask]
+    labels = labels[mask]
+
+    return {
+        "nr_positive_preds_avg": preds.sum(axis=-1).mean(),
+        "positive_label_detected": np.multiply(preds, labels).sum(axis=-1).mean(),
+    }
 
 
 class CustomTrainingArguments(TrainingArguments):
@@ -22,7 +50,7 @@ class CustomTrainingArguments(TrainingArguments):
         self.negative_sampling_ratio = negative_sampling_ratio
         self.negative_sampling_method = negative_sampling_method
         self.negative_sampling_avoid_dominant = negative_sampling_avoid_dominant
-        self.temperature_neg_sampling_softmax = temperature_neg_sampling_softmax,
+        self.temperature_neg_sampling_softmax = temperature_neg_sampling_softmax
         self.weight_positive = weight_positive
         self.freeze_base_model = freeze_base_model
 

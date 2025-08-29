@@ -4,7 +4,7 @@ from prepare_data import build_datasets
 from transformers import set_seed, EarlyStoppingCallback
 import os
 import time
-from custom_train import CustomTrainingArguments, CustomTrainer
+from custom_train import CustomTrainingArguments, CustomTrainer, compute_metrics
 import wandb
 from utils import load_yaml_files
 
@@ -119,6 +119,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+        compute_metrics=lambda x: compute_metrics(x, model.tokenizer.pad_token_id),
     )
 
     checkpoints = [os.path.join(output_dir, d) for d in os.listdir(output_dir)
