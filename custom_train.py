@@ -39,6 +39,7 @@ class CustomTrainingArguments(TrainingArguments):
         negative_sampling=True,
         negative_sampling_ratio=10,
         negative_sampling_method="random", 
+        combine_neg_distribution="add",
         negative_sampling_avoid_dominant=True,
         temperature_neg_sampling_softmax=1.0,
         weight_positive="balance",
@@ -49,6 +50,7 @@ class CustomTrainingArguments(TrainingArguments):
         self.negative_sampling = negative_sampling
         self.negative_sampling_ratio = negative_sampling_ratio
         self.negative_sampling_method = negative_sampling_method
+        self.combine_neg_distribution = combine_neg_distribution
         self.negative_sampling_avoid_dominant = negative_sampling_avoid_dominant
         self.temperature_neg_sampling_softmax = temperature_neg_sampling_softmax
         self.weight_positive = weight_positive
@@ -196,8 +198,27 @@ class CustomTrainer(Trainer):
                 sampling_distribution[row_indices, col_indices] = 0
 
 
-        # Combine sampling distributions by adding them up
-        sampling_distribution = torch.stack(sampling_distributions).sum(dim=0)
+        # Combine sampling distributions
+        if self.args.combine_neg_distribution == "add":
+            sampling_distribution = torch.stack(sampling_distributions).sum(dim=0)
+        elif self.args.combine_neg_distribution == "multiply":
+            sampling_distribution = torch.stack(sampling_distributions).prod(dim=0)
+        elif self.args.combine_neg_distribution == "independent":
+            sampled_positions = []
+            for i in range(len(sampling_distributions)):
+                if i == len(sampling_distributions) - 1:
+                    # Take the rest
+                    nr_samples = self.args.negative_sampling_ratio - i * (self.args.negative_sampling_ratio//len(sampling_distributions))
+                else:
+                    nr_samples = self.args.negative_sampling_ratio//len(sampling_distributions)
+
+                sampled_positions.append(
+                    torch.multinomial(input=sampling_distributions[i], num_samples=nr_samples, replacement=False)
+                )
+            sampled_positions = torch.cat(sampled_positions, dim=-1)
+        else:
+            raise NotImplementedError()
+        
         sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
 
         sampled_mask.scatter_(dim=-1, index=sampled_positions, value=True)

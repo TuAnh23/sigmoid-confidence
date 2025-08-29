@@ -5,6 +5,7 @@ init_sigmoid_head_from_softmax_head: True
 negative_sampling: True
 negative_sampling_ratio: 10
 negative_sampling_method: "token_freq,softmax_probs"
+combine_neg_distribution: "add"
 negative_sampling_avoid_dominant: True
 temperature_neg_sampling_softmax: 2
 weight_positive: "None"  # "balance"

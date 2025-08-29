@@ -107,6 +107,7 @@ def main():
         negative_sampling=configs.get('negative_sampling'),
         negative_sampling_ratio=configs.get('negative_sampling_ratio'),
         negative_sampling_method=configs.get('negative_sampling_method'), 
+        combine_neg_distribution=configs.get('combine_neg_distribution'), 
         negative_sampling_avoid_dominant=configs.get('negative_sampling_avoid_dominant'),
         temperature_neg_sampling_softmax=configs.get('temperature_neg_sampling_softmax'),
         weight_positive=configs.get('weight_positive'),
