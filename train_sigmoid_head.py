@@ -4,7 +4,7 @@ from prepare_data import build_datasets
 from transformers import set_seed, EarlyStoppingCallback
 import os
 import time
-from custom_train import CustomTrainingArguments, CustomTrainer, compute_metrics
+from custom_train import CustomTrainingArguments, CustomTrainer
 import wandb
 from utils import load_yaml_files
 
@@ -91,7 +91,7 @@ def main():
         logging_steps=10,
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
-        learning_rate=5e-5, # 1e-5,
+        learning_rate=1e-4, # 5e-5
         per_device_train_batch_size=configs.get('per_device_train_batch_size'),
         per_device_eval_batch_size=configs.get('per_device_eval_batch_size'),
         gradient_accumulation_steps=configs.get('gradient_accumulation_steps'),
@@ -120,7 +120,6 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
-        compute_metrics=lambda x: compute_metrics(x, model.tokenizer.pad_token_id),
     )
 
     checkpoints = [os.path.join(output_dir, d) for d in os.listdir(output_dir)
