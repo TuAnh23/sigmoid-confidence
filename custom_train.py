@@ -92,6 +92,13 @@ class CustomTrainer(Trainer):
         # Normalize to get a freq distribution 
         self.token_counter = self.token_counter / self.token_counter.sum()
 
+    def prediction_step(self, *args, **kwargs):
+        # Move tensors to CPU for calculating metrics to avoid GPU OOM. 
+        loss, outputs, labels = super().prediction_step(*args, **kwargs)
+        if isinstance(outputs, tuple):
+            outputs = tuple(o.detach().cpu() if isinstance(o, torch.Tensor) else o for o in outputs)
+        return loss, outputs, labels
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # Get the output logits
         outputs = model(**inputs)
