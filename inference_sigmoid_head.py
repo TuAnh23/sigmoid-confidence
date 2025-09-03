@@ -125,8 +125,8 @@ def main():
             pred_confidence_log_scores = torch.gather(confidence_log_scores, -1, predicted_ids.unsqueeze(-1)).squeeze(-1)
 
             # Log scores to scores
-            pred_scores = torch.exp(pred_log_scores).squeeze(-1)
-            pred_confidence_scores = torch.exp(pred_confidence_log_scores).squeeze(-1)
+            pred_scores = torch.exp(pred_log_scores)
+            pred_confidence_scores = torch.exp(pred_confidence_log_scores)
 
             # Store output
             results['pred_txt'].extend(model.tokenizer.batch_decode(predicted_ids, skip_special_tokens=True))
