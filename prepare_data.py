@@ -31,12 +31,12 @@ def _message_spans(messages, tokenizer):
 def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
     if dataname == "ParaCrawl":
         chat_messages = [
-            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}:"},
+            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}: "},
             {"role": "assistant", "content": example['target']}
         ]
     elif "google/wmt24pp" in dataname:
         chat_messages = [
-            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['source']}.\n{tgt_lang}:"},
+            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['source']}.\n{tgt_lang}: "},
             {"role": "assistant", "content": example['target']}
         ]
     elif dataname == "Unbabel/TowerBlocks-v0.2":
