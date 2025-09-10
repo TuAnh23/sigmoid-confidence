@@ -27,43 +27,23 @@ def under_over_confidence_measure(gold_quality, qe_output):
     return under_confidence, over_confidence
 
 
-def token_to_sentence_scores(tokens, token_level_scores, aggregate, ignored_tokens):
+def token_to_sentence_scores(token_level_scores, aggregate):
     """
     Read token-level scores from a file and aggregate them into sentence-level scores.
     :param token_level_scores: token-level scores
     :param aggregate: Aggregation method ('mean', 'sum', 'prod', 'median', 'min').
     :return: Tuple of token-level scores and aggregated sentence-level scores.
     """
-    filtered_token_level_scores = []
-    filtered_tokens = []
-    for sent_id in range(len(tokens)):
-        scores = []
-        toks = []
-        for tok_id in range(len(tokens[sent_id])):
-            if tok_id == 0 and tokens[sent_id][tok_id] in ['<0x0A>', '▁']:
-                # Do not consider trailing white spaces and newlines
-                continue
-            if tokens[sent_id][tok_id] in ignored_tokens:
-                # Do not consider special tokens (defined by the tokenizer)
-                continue
-            if not tokens[sent_id][tok_id].isprintable():
-                # Do not consider tokens that does not appear in the output
-                continue
-            scores.append(token_level_scores[sent_id][tok_id])
-            toks.append(tokens[sent_id][tok_id])
-        filtered_token_level_scores.append(scores)
-        filtered_tokens.append(toks)
-
     if aggregate == 'mean':
-        sentence_level_scores = [np.mean(np.array(x)) if len(x) > 0 else 0 for x in filtered_token_level_scores]
+        sentence_level_scores = [np.mean(np.array(x)) if len(x) > 0 else 0 for x in token_level_scores]
     elif aggregate == 'sum':
-        sentence_level_scores = [np.sum(np.array(x)) if len(x) > 0 else 0 for x in filtered_token_level_scores]
+        sentence_level_scores = [np.sum(np.array(x)) if len(x) > 0 else 0 for x in token_level_scores]
     elif aggregate == 'prod':
-        sentence_level_scores = [np.prod(np.array(x)) if len(x) > 0 else 0 for x in filtered_token_level_scores]
+        sentence_level_scores = [np.prod(np.array(x)) if len(x) > 0 else 0 for x in token_level_scores]
     elif aggregate == 'median':
-        sentence_level_scores = [np.median(np.array(x)) if len(x) > 0 else 0 for x in filtered_token_level_scores]
+        sentence_level_scores = [np.median(np.array(x)) if len(x) > 0 else 0 for x in token_level_scores]
     elif aggregate == 'min':
-        sentence_level_scores = [np.min(np.array(x)) if len(x) > 0 else 0 for x in filtered_token_level_scores]
+        sentence_level_scores = [np.min(np.array(x)) if len(x) > 0 else 0 for x in token_level_scores]
     else:
         raise RuntimeError(f"Invalid value for aggregate: {aggregate}.")
     return sentence_level_scores
@@ -160,11 +140,11 @@ def main():
         if 'scores' in k:
             if 'log' in k:
                 for aggregate in ["sum", "mean"]:
-                    qe_output = token_to_sentence_scores(tokens=results['pred_tokenized_txt'], token_level_scores=v, aggregate=aggregate, ignored_tokens=results['special_tokens'] if 'special_tokens' in results else [])
+                    qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
                     log_correlations(configs['dataname'], qe_output, gold_quality, k, aggregate)
             else:
                 for aggregate in ["prod", "mean"]:
-                    qe_output = token_to_sentence_scores(tokens=results['pred_tokenized_txt'], token_level_scores=v, aggregate=aggregate, ignored_tokens=results['special_tokens'] if 'special_tokens' in results else [])
+                    qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
                     log_correlations(configs['dataname'], qe_output, gold_quality, k, aggregate)
     
 

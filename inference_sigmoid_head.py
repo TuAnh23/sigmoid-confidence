@@ -52,6 +52,8 @@ def main():
     model.eval()
 
     # 2. Prepare test data
+    # Left-side pad the input
+    model.tokenizer.padding_side = "left"
     test_dataset = build_datasets(
         dataname=configs.get('dataname'),
         tokenizer=model.tokenizer, 
@@ -129,6 +131,7 @@ def main():
             pred_confidence_scores = torch.exp(pred_confidence_log_scores)
 
             # Store output
+            results['special_tokens'] = model.tokenizer.all_special_tokens  # these tokens' scores will be ignored, as they don't appear in the output
             results['pred_txt'].extend(model.tokenizer.batch_decode(predicted_ids, skip_special_tokens=True))
             for batch_item in range(predicted_ids.shape[0]):
                 end_idx = find_eos_idx(predicted_ids[batch_item], model.tokenizer.eos_token_id)
@@ -148,6 +151,7 @@ def main():
                     for j in range(end_idx):
                         print(f"SOURCE: {model.tokenizer.decode(batch['input_ids'][batch_item], skip_special_tokens=True)}")
                         print(f"PRED: {model.tokenizer.decode(predicted_ids[batch_item], skip_special_tokens=True)}")
+                        print(f"PRED TOKENIZED: {results['pred_tokenized_txt'][-1][:end_idx]}")
                         print(f"PREFIX PRED: {model.tokenizer.decode(predicted_ids[batch_item][:j], skip_special_tokens=True)}")
                         print(f"TOKEN: {results['pred_tokenized_txt'][-1][j]}")
                         print(f"CONFIDENCE SCORE: {results['confidence_scores'][-1][j]}")
