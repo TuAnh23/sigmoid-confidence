@@ -7,6 +7,7 @@ from utils import load_yaml_files, load_text_file, load_comet_model, format_for_
 import json
 from scipy.stats import pearsonr, spearmanr, kendalltau
 from prepare_data import build_datasets
+from sacrebleu.metrics import BLEU, CHRF
 
 
 def min_max_scale(arr):
@@ -117,6 +118,13 @@ def main():
             format_for_comet(src, results['pred_txt'], ref), batch_size=4, gpus=1
         ).scores
         write_text_file(gold_quality, cache_path)
+
+    # Log the system-level quality, also with some traditional metrics
+    wandb.log({
+        f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(gold_quality),
+        f"{configs['dataname']}_BLEU": BLEU().corpus_score(results['pred_txt'], [ref]).score,
+        f"{configs['dataname']}_chrF2": CHRF().corpus_score(results['pred_txt'], [ref]).score,
+    })
 
     # Calculate and eval supervised baseline
     if configs["comet_qe_baseline"] != "None":
