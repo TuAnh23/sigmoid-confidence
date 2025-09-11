@@ -67,6 +67,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
     parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
     parser.add_argument("--wandb-run-id", type=str, required=True)
+    parser.add_argument("--use-comet-cache", action='store_true', 
+                        help="Whether to use the cached COMET scores. Recalculate if not set.")
 
     args = parser.parse_args()
     print(args)
@@ -108,7 +110,7 @@ def main():
 
     # Calculate ref-based gold quality
     cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_ref_based']}.txt"
-    if os.path.isfile(cache_path):
+    if os.path.isfile(cache_path) and args.use_comet_cache:
         print("Load pre-computed ref-based COMET ...")
         gold_quality = load_text_file(cache_path)
         gold_quality = [float(x) for x in gold_quality]
@@ -130,7 +132,7 @@ def main():
     # Calculate and eval supervised baseline
     if configs["comet_qe_baseline"] != "None":
         cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_qe_baseline']}.txt"
-        if os.path.isfile(cache_path):
+        if os.path.isfile(cache_path) and args.use_comet_cache:
             print("Loading COMET QE baseline ...")
             qe_output = load_text_file(cache_path)
             qe_output = [float(x) for x in qe_output]
