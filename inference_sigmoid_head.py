@@ -36,6 +36,7 @@ def main():
         project=os.environ["WANDB_PROJECT"],
         id=args.wandb_run_id,
         config=configs,
+        config_exclude_keys=['dataname'],  # to not overwrite the name of the training data
         dir=output_dir,
         resume="allow"
     )
