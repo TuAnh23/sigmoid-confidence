@@ -37,3 +37,11 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
         outputs['hidden_states'] = []  # remove to save memory
 
         return outputs
+    
+    # Only save the confidence head (not base model)
+    def state_dict(self, *args, **kwargs):
+        return self.confidence_head.state_dict(*args, **kwargs)
+
+    # Load only into the confidence head
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        return self.confidence_head.load_state_dict(state_dict, *args, **kwargs)
