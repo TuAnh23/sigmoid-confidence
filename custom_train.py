@@ -1,6 +1,6 @@
 from transformers import TrainingArguments, Trainer
 import torch
-from utils import find_dominant
+from boostedprob import find_dominant
 from collections import Counter
 from tqdm import tqdm
 import numpy as np
@@ -183,7 +183,7 @@ class CustomTrainer(Trainer):
         
 
         if self.args.negative_sampling_avoid_dominant:
-            dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, diff_cut=0.005)
+            dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, epsilon=0.005)
 
             # Convert dominant_indices to a more convenient format
             # Create a mask for valid indices (i.e., where not -1)

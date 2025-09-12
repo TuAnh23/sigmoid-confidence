@@ -5,7 +5,8 @@ import wandb
 from transformers import set_seed
 import argparse
 import os
-from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, find_start_idx, check_is_dominant
+from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, find_start_idx
+from boostedprob import calculate_boostedprob
 from prepare_data import build_datasets
 from torch.utils.data import DataLoader
 import time
@@ -149,7 +150,7 @@ def main():
             entropy = torch.mul(log_scores, torch.exp(log_scores)).sum(dim=-1)
 
             # Calculate boosted prob of the log softmax
-            boosted_prob = check_is_dominant(log_scores, output_ids)
+            boosted_prob = calculate_boostedprob(log_probs=log_scores, target=output_ids)
             log_boosted_prob = torch.log(boosted_prob + 1e-10)  # Add small value to avoid log(0)
 
             # Gather the scores of the predicted tokens
