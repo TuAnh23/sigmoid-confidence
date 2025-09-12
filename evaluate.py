@@ -129,6 +129,11 @@ def main():
         f"{configs['dataname']}_chrF2": CHRF().corpus_score(results['pred_txt'], [ref]).score,
     })
 
+    if configs.get('force_decoding'):
+        # This is the setting where we do forced decoding on translations where human quality scores are available
+        gold_quality = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}")
+        gold_quality = [float(x) for x in gold_quality]
+
     # Calculate and eval supervised baseline
     if configs["comet_qe_baseline"] != "None":
         cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_qe_baseline']}.txt"

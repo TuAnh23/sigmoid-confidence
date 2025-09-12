@@ -16,6 +16,7 @@ def compute_metrics(eval_pred, pad_token_id):
     confidence_scores = confidence_scores[..., :-1, :]
     confidence_scores = confidence_scores.reshape(-1, confidence_scores.shape[-1])  # Reshape to [B*T,vocab_size]
     confidence_scores = -np.logaddexp(0, -confidence_scores)
+    confidence_scores = confidence_scores.exp()
     labels = labels[..., 1:]
     labels = labels.reshape(-1)
     mask = labels != pad_token_id  

@@ -29,7 +29,7 @@ def _message_spans(messages, tokenizer):
 
 
 def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
-    if dataname == "ParaCrawl":
+    if dataname in ["ParaCrawl", "wmt22_general_MT_ende_DA_bestmt"]:
         chat_messages = [
             {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}: "},
             {"role": "assistant", "content": example['target']}
@@ -47,16 +47,8 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
                 "role": role, 
                 "content": turn['value']
             })
-
-        # assert len(example['conversations']) == 2 
-        # assert example['conversations'][0]['from'] == 'human'
-        # assert example['conversations'][1]['from'] != 'human'
-        # chat_messages = [
-        #     {"role": "user", "content": example['conversations'][0]['value']},
-        #     {"role": "assistant", "content": example['conversations'][1]['value']}
-        # ]
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Not yet implemented for dataset {dataname}.")
     
     return chat_messages
 
@@ -113,7 +105,7 @@ def format_and_tokenize_example_for_inference(example, dataname, src_lang, tgt_l
     return tokenized_input
 
 def format_raw_strings(example, dataname):
-    if dataname == "ParaCrawl":
+    if dataname in ["ParaCrawl", "wmt22_general_MT_ende_DA_bestmt"]:
         formatted_example = {
             'src': example['input'],
             'ref': example['target']
@@ -124,7 +116,7 @@ def format_raw_strings(example, dataname):
             'ref': example['target']
         }
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Not yet implemented for the data {dataname}.")
     
     return formatted_example
 
@@ -143,7 +135,7 @@ def build_datasets(
         split=None, # Args used by huggingface dataset
         raw_text_string=False,  # Return raw text strings with (src, ref) entries, instead of formatted and tokenized input samples
     ):
-    if dataname == "ParaCrawl":
+    if dataname in ["ParaCrawl", "wmt22_general_MT_ende_DA_bestmt"]:
         # Wrap with Hugging Face datasets
         dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
     elif dataname == "Unbabel/TowerBlocks-v0.2":

@@ -187,6 +187,29 @@ def find_eos_idx(pred_ids, eos_id):
     else:
         return pred_ids.shape[0]
     
+def find_start_idx(out_ids, generation_prompt):
+    """
+    Find the index right after the LAST occurrence of the generation prompt subsequence.
+    
+    Args:
+        out_ids (torch.Tensor): 1D tensor of predicted token ids.
+        generation_prompt (list[int]): list of token ids representing the prompt.
+    
+    Returns:
+        int: start index (position after the last occurrence of the prompt).
+             Defaults to 0 if not found.
+    """
+    prompt_len = len(generation_prompt)
+
+    # Walk backward to find the last match
+    for i in range(out_ids.shape[0] - prompt_len, -1, -1):
+        if torch.equal(out_ids[i:i+prompt_len], torch.tensor(generation_prompt, device=out_ids.device)):
+            return i + prompt_len  # start right after the prompt
+
+    # Prompt not found → fall back to 0
+    return 0
+
+    
 def load_text_file(file_path):
     """
     Load text file into a list, each item is a line of the file
