@@ -29,15 +29,10 @@ def _message_spans(messages, tokenizer):
 
 
 def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
-    if dataname in ["ParaCrawl", "wmt22_general_MT_ende_DA_bestmt"]:
-        chat_messages = [
-            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}: "},
-            {"role": "assistant", "content": example['target']}
-        ]
-    elif "google/wmt24pp" in dataname:
+    if "google/wmt24pp" in dataname:
         chat_messages = [
             {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['source']}.\n{tgt_lang}: "},
-            {"role": "assistant", "content": example['target']}
+            {"role": "assistant", "content": " " + example['target']}
         ]
     elif dataname == "Unbabel/TowerBlocks-v0.2":
         chat_messages = []
@@ -48,7 +43,10 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
                 "content": turn['value']
             })
     else:
-        raise NotImplementedError(f"Not yet implemented for dataset {dataname}.")
+        chat_messages = [
+            {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}: "},
+            {"role": "assistant", "content": " " + example['target']}
+        ]
     
     return chat_messages
 
@@ -105,18 +103,16 @@ def format_and_tokenize_example_for_inference(example, dataname, src_lang, tgt_l
     return tokenized_input
 
 def format_raw_strings(example, dataname):
-    if dataname in ["ParaCrawl", "wmt22_general_MT_ende_DA_bestmt"]:
-        formatted_example = {
-            'src': example['input'],
-            'ref': example['target']
-        }
-    elif "google/wmt24pp" in dataname:
+    if "google/wmt24pp" in dataname:
         formatted_example = {
             'src': example['source'],
             'ref': example['target']
         }
     else:
-        raise NotImplementedError(f"Not yet implemented for the data {dataname}.")
+        formatted_example = {
+            'src': example['input'],
+            'ref': example['target']
+        }
     
     return formatted_example
 
@@ -135,10 +131,7 @@ def build_datasets(
         split=None, # Args used by huggingface dataset
         raw_text_string=False,  # Return raw text strings with (src, ref) entries, instead of formatted and tokenized input samples
     ):
-    if dataname in ["ParaCrawl", "wmt22_general_MT_ende_DA_bestmt"]:
-        # Wrap with Hugging Face datasets
-        dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
-    elif dataname == "Unbabel/TowerBlocks-v0.2":
+    if dataname == "Unbabel/TowerBlocks-v0.2":
         dataset = load_dataset(dataname)
         dataset = dataset['train']
 
@@ -160,7 +153,8 @@ def build_datasets(
         dataset = load_dataset(data_repo, lang_pairs)
         dataset = dataset['train'].filter(lambda x: not x["is_bad_source"])
     else:
-        raise NotImplementedError(f"Not yet implement data processing for {dataname}")
+        # Wrap with Hugging Face datasets
+        dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
     
     if not raw_text_string:
         dataset = dataset.map(
