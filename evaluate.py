@@ -49,19 +49,31 @@ def token_to_sentence_scores(token_level_scores, aggregate):
         raise RuntimeError(f"Invalid value for aggregate: {aggregate}.")
     return sentence_level_scores
 
-def log_correlations(dataname, qe_output, gold_quality, qe_name, agg=""):
+def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg=""):
     if len(qe_output) == 0:
         return
-    under_confidence, over_confidence = under_over_confidence_measure(gold_quality, qe_output)
+    under_confidence, over_confidence = under_over_confidence_measure(pseudo_gold_quality, qe_output)
     wandb.log(
         {
-            f"{dataname}_{qe_name}{agg}/sent_level_pearsonr": pearsonr(qe_output, gold_quality)[0],
-            f"{dataname}_{qe_name}{agg}/sent_level_spearmanr": spearmanr(qe_output, gold_quality)[0],
-            f"{dataname}_{qe_name}{agg}/sent_level_kendalltau": kendalltau(qe_output, gold_quality)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_pearsonr": pearsonr(qe_output, pseudo_gold_quality)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_spearmanr": spearmanr(qe_output, pseudo_gold_quality)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_kendalltau": kendalltau(qe_output, pseudo_gold_quality)[0],
             f"{dataname}_{qe_name}{agg}/sent_level_under_confidence": under_confidence,
             f"{dataname}_{qe_name}{agg}/sent_level_over_confidence": over_confidence
         }
     )
+
+    if human_gold_quality is not None:
+        under_confidence, over_confidence = under_over_confidence_measure(human_gold_quality, qe_output)
+        wandb.log(
+            {
+                f"{dataname}_{qe_name}{agg}/sent_level_pearsonr_humanGold": pearsonr(qe_output, human_gold_quality)[0],
+                f"{dataname}_{qe_name}{agg}/sent_level_spearmanr_humanGold": spearmanr(qe_output, human_gold_quality)[0],
+                f"{dataname}_{qe_name}{agg}/sent_level_kendalltau_humanGold": kendalltau(qe_output, human_gold_quality)[0],
+                f"{dataname}_{qe_name}{agg}/sent_level_under_confidence_humanGold": under_confidence,
+                f"{dataname}_{qe_name}{agg}/sent_level_over_confidence_humanGold": over_confidence
+            }
+        )
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
@@ -112,27 +124,31 @@ def main():
     cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_ref_based']}.txt"
     if os.path.isfile(cache_path) and args.use_comet_cache:
         print("Load pre-computed ref-based COMET ...")
-        gold_quality = load_text_file(cache_path)
-        gold_quality = [float(x) for x in gold_quality]
+        pseudo_gold_quality = load_text_file(cache_path)
+        pseudo_gold_quality = [float(x) for x in pseudo_gold_quality]
     else:
         print("Running ref-based COMET  ...")
         comet_ref_based = load_comet_model(model_name=configs['comet_ref_based'])
-        gold_quality = comet_ref_based.predict(
+        pseudo_gold_quality = comet_ref_based.predict(
             format_for_comet(src, results['pred_txt'], ref), batch_size=4, gpus=1
         ).scores
-        write_text_file(gold_quality, cache_path)
+        write_text_file(pseudo_gold_quality, cache_path)
 
     # Log the system-level quality, also with some traditional metrics
     wandb.log({
-        f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(gold_quality),
+        f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(pseudo_gold_quality),
         f"{configs['dataname']}_BLEU": BLEU().corpus_score(results['pred_txt'], [ref]).score,
         f"{configs['dataname']}_chrF2": CHRF().corpus_score(results['pred_txt'], [ref]).score,
     })
 
+    human_gold_quality = None
     if configs.get('force_decoding'):
         # This is the setting where we do forced decoding on translations where human quality scores are available
-        gold_quality = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}")
-        gold_quality = [float(x) for x in gold_quality]
+        human_gold_quality = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}")
+        human_gold_quality = [float(x) for x in human_gold_quality]
+        wandb.log({
+            f"{configs['dataname']}_humanScore": np.mean(human_gold_quality)
+        })
 
     # Calculate and eval supervised baseline
     if configs["comet_qe_baseline"] != "None":
@@ -149,7 +165,12 @@ def main():
             ).scores
             write_text_file(qe_output, cache_path)
 
-    log_correlations(configs['dataname'], qe_output, gold_quality, configs['comet_qe_baseline'])
+    log_correlations(dataname=configs['dataname'], 
+                     qe_output=qe_output, 
+                     pseudo_gold_quality=pseudo_gold_quality, 
+                     human_gold_quality=human_gold_quality,
+                     qe_name=configs['comet_qe_baseline'])
+    
 
     # Eval scores from model inference
     for k, v in results.items():
@@ -157,11 +178,21 @@ def main():
             if 'log' in k:
                 for aggregate in ["sum", "mean"]:
                     qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
-                    log_correlations(configs['dataname'], qe_output, gold_quality, k, aggregate)
+                    log_correlations(dataname=configs['dataname'], 
+                                     qe_output=qe_output, 
+                                     pseudo_gold_quality=pseudo_gold_quality, 
+                                     human_gold_quality=human_gold_quality,
+                                     qe_name=k, 
+                                     agg=aggregate)
             else:
                 for aggregate in ["prod", "mean"]:
                     qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
-                    log_correlations(configs['dataname'], qe_output, gold_quality, k, aggregate)
+                    log_correlations(dataname=configs['dataname'], 
+                                     qe_output=qe_output, 
+                                     pseudo_gold_quality=pseudo_gold_quality, 
+                                     human_gold_quality=human_gold_quality,
+                                     qe_name=k, 
+                                     agg=aggregate)
     
 
 if __name__ == "__main__":
