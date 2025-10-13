@@ -5,8 +5,8 @@ NR_GPUS=$2
 TRAIN_CONFIG=$3  # "configs/train_head_only.yaml"
 WANDB_RUN_ID=$4  # Can pass in a pre-existing ID to continue training from checkpoint
 TRAIN_DATA_CONFIG="configs/towerblocks_data.yaml"  # "configs/paracrawl_data.yaml" "configs/towerblocks_data.yaml"
-declare -a TEST_GENERATE_DATA_CONFIGS=( "configs/paracrawl_data.yaml" "configs/wmt24_data.yaml")
-declare -a TEST_SCORE_DATA_CONFIGS=( "configs/wmt22_general_MT_ende_DA_bestmt.yaml" )
+declare -a TEST_GENERATE_DATA_CONFIGS=( "configs/paracrawl_data.yaml" "configs/wmt24_data.yaml" "configs/pawsx.yaml")
+declare -a TEST_SCORE_DATA_CONFIGS=( "configs/wmt22_general_MT_ende_DA_bestmt.yaml" "configs/wmt22_general_MT_ende_DA_worstmt.yaml" "configs/wmt24_enzh_FD_bestmt.yaml" "configs/wmt24_enzh_FD_worstmt.yaml" "configs/wmt24_enzh_FD_allmt.yaml" "configs/wmt24_ende_FD_bestmt.yaml" "configs/wmt24_ende_FD_worstmt.yaml" "configs/wmt24_ende_FD_allmt.yaml" "configs/pawsx.yaml" )
 
 if [ -z "$WANDB_RUN_ID" ]; then
     WANDB_RUN_ID=$(date +%s%N)

@@ -42,6 +42,11 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
                 "role": role, 
                 "content": turn['value']
             })
+    elif dataname == "pawsx":
+        chat_messages = [
+            {"role": "user", "content": f"What is a different but equivalent (paraphrase) way of saying: \"{example['input']}\"?\n"},
+            {"role": "assistant", "content": " " + example['target']}
+        ]
     else:
         chat_messages = [
             {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}: "},

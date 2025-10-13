@@ -1,0 +1,8 @@
+test_src_path: "data/wmt24_enzh_FD_worstmt/text.src"
+test_tgt_path: "data/wmt24_enzh_FD_worstmt/text.ref"
+test_pregenerated_tgt_path: "data/wmt24_enzh_FD_worstmt/text.tgt"
+human_da_path: "data/wmt24_enzh_FD_worstmt/text.scores"
+src_lang: "English"
+tgt_lang: "Chinese"
+dataname: "wmt24_enzh_FD_worstmt"
+max_length: 2048

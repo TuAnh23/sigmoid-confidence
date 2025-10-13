@@ -1,0 +1,8 @@
+test_src_path: "fairseq/examples/confidence_aware_ssl/data/wmt22_general_MT_ende_DA_worstmt/test.en"
+test_tgt_path: "fairseq/examples/confidence_aware_ssl/data/wmt22_general_MT_ende_DA_worstmt/ref.de"
+test_pregenerated_tgt_path: "fairseq/examples/confidence_aware_ssl/data/wmt22_general_MT_ende_DA_worstmt/test.de"
+human_da_path: "fairseq/examples/confidence_aware_ssl/data/wmt22_general_MT_ende_DA_worstmt/da_z_score.txt"
+src_lang: "English"
+tgt_lang: "German"
+dataname: "wmt22_general_MT_ende_DA_worstmt"
+max_length: 896

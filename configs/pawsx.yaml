@@ -1,0 +1,6 @@
+test_src_path: "data/pawsx/pawsx_clean_over_tower.sentence1"
+test_tgt_path: "data/pawsx/pawsx_clean_over_tower.sentence1"  # dummy path, should not be used, we don't have ref
+test_pregenerated_tgt_path: "data/pawsx/pawsx_clean_over_tower.sentence2"
+human_da_path: "data/pawsx/pawsx_clean_over_tower.label"
+dataname: "pawsx"
+max_length: 2048

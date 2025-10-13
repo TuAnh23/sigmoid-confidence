@@ -1,0 +1,8 @@
+test_src_path: "data/wmt24_ende_FD_allmt/text.src"
+test_tgt_path: "data/wmt24_ende_FD_allmt/text.ref"
+test_pregenerated_tgt_path: "data/wmt24_ende_FD_allmt/text.tgt"
+human_da_path: "data/wmt24_ende_FD_allmt/text.scores"
+src_lang: "English"
+tgt_lang: "German"
+dataname: "wmt24_ende_FD_allmt"
+max_length: 2048
