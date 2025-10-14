@@ -42,6 +42,8 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
                 "role": role, 
                 "content": turn['value']
             })
+    elif dataname in ["allenai/tulu-3-sft-olmo-2-mixture-0225", "allenai/tulu-3-sft-olmo-2-mixture"]:
+        chat_messages = example['messages']
     elif dataname == "pawsx":
         chat_messages = [
             {"role": "user", "content": f"What is a different but equivalent (paraphrase) way of saying: \"{example['input']}\"?\n"},
@@ -83,7 +85,10 @@ def format_and_tokenize_example_for_teacher_forcing(example, dataname, src_lang,
         else:
             # Do not train on generation "bos" prompt, since it will be included in the input during inference
             # (We set add_generation_prompt=True when tokenize the input during inference)
-            generation_prompt_end = start + len(tokenizer.apply_chat_template("", add_generation_prompt=True))
+            generation_prompt = tokenizer.apply_chat_template([{"role": "user", "content": ""},], add_generation_prompt=True, tokenize=True)[
+                len(tokenizer.apply_chat_template([{"role": "user", "content": ""},], add_generation_prompt=False, tokenize=True)):
+            ]  # Subtract the prompt with and without generation prompt to get the generation prompt
+            generation_prompt_end = start + len(generation_prompt)
             mask_start = start
             mask_end = min(generation_prompt_end, max_length)
 
@@ -153,6 +158,22 @@ def build_datasets(
         else:
             dataset = rest
         dataset = dataset.filter(has_no_none_values)
+    elif dataname in ["allenai/tulu-3-sft-olmo-2-mixture-0225", "allenai/tulu-3-sft-olmo-2-mixture"]:
+        dataset = load_dataset(dataname)
+        dataset = dataset['train']
+
+        # Randomly select 5000 samples for validation
+        split_dataset = dataset.train_test_split(test_size=5000, seed=42)
+        validation = split_dataset['test']
+
+        # The rest is for training
+        train = split_dataset['train']
+
+        if split == "dev":
+            dataset = validation
+        else:
+            dataset = train
+
     elif "google/wmt24pp" in dataname:
         data_repo, lang_pairs = dataname.split('|')
         dataset = load_dataset(data_repo, lang_pairs)

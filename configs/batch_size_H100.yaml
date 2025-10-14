@@ -1,8 +1,18 @@
-per_device_train_batch_size: 8
-per_device_eval_batch_size: 8
-per_device_test_batch_size: 8
-gradient_accumulation_steps: 9
-eval_steps: 600
-save_steps: 600
+# For tower 7B
+# per_device_train_batch_size: 8
+# per_device_eval_batch_size: 8
+# per_device_test_batch_size: 8
+# gradient_accumulation_steps: 9
+# eval_steps: 600
+# save_steps: 600
 # per_device_train_batch_size * gradient_accumulation_steps = 72
-# eval_steps / gradient_accumulation_steps = 8.33
+# eval_steps / gradient_accumulation_steps = 66.67
+
+
+# For olmo 1B
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+per_device_test_batch_size: 2
+gradient_accumulation_steps: 36
+eval_steps: 2400
+save_steps: 2400
