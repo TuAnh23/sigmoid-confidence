@@ -93,34 +93,64 @@ class CustomTrainer(Trainer):
         # Normalize to get a freq distribution 
         self.token_counter = self.token_counter / self.token_counter.sum()
 
+
+    def sampled_confidence_logits(self, hidden_states, confidence_head, to_keep_mask):
+        # hidden_states: [B*T, hidden_dim]
+        # to_keep_mask: [B*T, vocab_size]
+        # confidence_head.weight [vocab_size, hidden_dim]
+
+        row_idx, col_idx = to_keep_mask.nonzero(as_tuple=True)
+        h_selected = hidden_states[row_idx]
+        w_selected = confidence_head.weight[col_idx]
+
+        logits = torch.sum(h_selected * w_selected, dim=1)
+
+        return logits
+
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        # Get the output logits
-        outputs = model(**inputs)
-        logits = outputs.get('logits')  # [B,T,vocab_size]
-        confidence_logits = outputs.get('confidence_logits')
+        # Compute the original model umembedding output logits and last hidden state
+        outputs = model(
+            **inputs,
+            compute_confidence_logits=False,
+        )
 
         # Get labels, take care of masking the pad tokens and shifting
         labels = inputs.get("labels")  # [B,T]
         shift_labels = labels[..., 1:].contiguous()
         to_keep_mask = shift_labels.view(-1) != self.model.tokenizer.pad_token_id  # ignore padding tokens
-        shift_confidence_logits = confidence_logits[..., :-1, :].contiguous()
-        shift_confidence_logits = shift_confidence_logits.view(-1, shift_confidence_logits.size(-1))  # Reshape to [B*T,vocab_size]
-        shift_logits = logits[..., :-1, :].contiguous()
+        shift_logits = outputs.get('logits')[..., :-1, :].contiguous()  # outputs.get('logits') has shape [B,T,vocab_size]
         shift_logits = shift_logits.view(-1, shift_logits.size(-1))  # Reshape to [B*T,vocab_size]
+        shift_hidden_states = outputs.get('last_hidden_states')[..., :-1, :].contiguous()  
+        shift_hidden_states = shift_hidden_states.view(-1, shift_hidden_states.size(-1))  # Reshape to [B*T,hidden_size]
 
         # One-hot encode labels, necessary for BCE
         one_hot_targets = torch.nn.functional.one_hot(
             shift_labels.view(-1),         # flatten to [B*T]
-            num_classes=shift_confidence_logits.size(-1)  # vocab size
+            num_classes=shift_logits.size(-1)  # vocab size
         ).float()  # shape: [B*T, vocab_size]
-
 
         # Sample negative tokens
         if self.args.negative_sampling:
-            to_keep_mask = to_keep_mask.unsqueeze(1).expand(-1, logits.size(-1)) & self.negative_sampling_mask(
+            to_keep_mask = to_keep_mask.unsqueeze(1).expand(-1, shift_logits.size(-1)) & self.negative_sampling_mask(
                 torch.nn.functional.log_softmax(shift_logits, dim=-1), 
                 one_hot_targets
-            )
+            )  # shape [B*T, vocab_size]
+
+            # Calculate the necessary confidence logits according to the mask
+            with torch.autocast("cuda", enabled=False):
+                # Full head forward with full precision
+                shift_confidence_logits = self.sampled_confidence_logits(
+                    shift_hidden_states, 
+                    model.confidence_head, 
+                    to_keep_mask
+                )
+            # Filter the target according to the mask
+            one_hot_targets = one_hot_targets[to_keep_mask]
+        else:
+            with torch.autocast("cuda", enabled=False):
+                # Full head forward with full precision
+                shift_confidence_logits = model.confidence_head(shift_hidden_states)
             
         # Calculate the pos_weight, i.e, n_negative / n_positive ratio in the whole batch
         if self.args.weight_positive == "balance":
@@ -140,10 +170,9 @@ class CustomTrainer(Trainer):
         # BCE loss for new head
         bce_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         
-
         bce_loss = bce_loss_fn(
-            shift_confidence_logits.view(-1, shift_confidence_logits.size(-1))[to_keep_mask], 
-            one_hot_targets[to_keep_mask]
+            shift_confidence_logits, 
+            one_hot_targets,
         )
 
         if self.args.freeze_base_model:
@@ -202,8 +231,10 @@ class CustomTrainer(Trainer):
         # Combine sampling distributions
         if self.args.combine_neg_distribution == "add":
             sampling_distribution = torch.stack(sampling_distributions).sum(dim=0)
+            sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
         elif self.args.combine_neg_distribution == "multiply":
             sampling_distribution = torch.stack(sampling_distributions).prod(dim=0)
+            sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
         elif self.args.combine_neg_distribution == "independent":
             sampled_positions = []
             for i in range(len(sampling_distributions)):
@@ -219,8 +250,6 @@ class CustomTrainer(Trainer):
             sampled_positions = torch.cat(sampled_positions, dim=-1)
         else:
             raise NotImplementedError()
-        
-        sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
 
         sampled_mask.scatter_(dim=-1, index=sampled_positions, value=True)
         del sampled_positions

@@ -22,6 +22,7 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         # TODO: for efficiency, consider cast base model to bfloat16, and only train head with full
+        compute_confidence_logits = kwargs.pop('compute_confidence_logits') if 'compute_confidence_logits' in kwargs.keys() else True 
         outputs = self.base_model(
             *args,
             **kwargs,
@@ -30,10 +31,13 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
 
         with torch.autocast("cuda", enabled=False):
             # Train head with full precision
-            confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
+            if compute_confidence_logits:
+                confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
+            else:
+                confidence_logits = None
 
         outputs["confidence_logits"] = confidence_logits
-
+        outputs['last_hidden_states'] = outputs.hidden_states[-1]
         outputs['hidden_states'] = []  # remove to save memory
 
         return outputs
