@@ -23,7 +23,8 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
             num_embeddings=self.base_model.lm_head.out_features, # vocab size
             embedding_dim=self.base_model.lm_head.in_features,  # hidden state size
             device=self.base_model.device,
-            sparse=True
+            sparse=True,
+            padding_idx=self.tokenizer.pad_token_id
         )
 
     def forward(self, *args, **kwargs):
