@@ -1,9 +1,49 @@
-from transformers import TrainingArguments, Trainer
+from transformers import TrainingArguments, Trainer, TrainerCallback
+
 import torch
 from boostedprob import find_dominant
 from collections import Counter
 from tqdm import tqdm
 import numpy as np
+from torch.optim import AdamW, SparseAdam
+
+
+class DualOptimizer(torch.optim.Optimizer):
+    """
+    A wrapper that combines two optimizers into one, so that HuggingFace Trainer
+    or other frameworks see it as a single optimizer.
+    """
+
+    def __init__(self, optimizer1, optimizer2):
+        self.optimizer1 = optimizer1
+        self.optimizer2 = optimizer2
+
+        # required by PyTorch Optimizer base class, though we won't use it
+        defaults = {}
+        param_groups = optimizer1.param_groups + optimizer2.param_groups
+        super().__init__(param_groups, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss1 = self.optimizer1.step(closure)
+        loss2 = self.optimizer2.step(closure)
+        # return whichever loss makes sense — typically the first one
+        return loss1 if loss1 is not None else loss2
+
+    def zero_grad(self, set_to_none: bool = False):
+        self.optimizer1.zero_grad(set_to_none=set_to_none)
+        self.optimizer2.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {
+            "optimizer1": self.optimizer1.state_dict(),
+            "optimizer2": self.optimizer2.state_dict(),
+        }
+
+    def load_state_dict(self, state_dict):
+        self.optimizer1.load_state_dict(state_dict["optimizer1"])
+        self.optimizer2.load_state_dict(state_dict["optimizer2"])
+
 
 
 def compute_metrics(eval_pred, pad_token_id):
@@ -94,6 +134,55 @@ class CustomTrainer(Trainer):
         self.token_counter = self.token_counter / self.token_counter.sum()
 
 
+    def create_optimizer(self):
+        # First create our custom optimizer
+        if self.optimizer is not None:
+            return self.optimizer
+
+        # Separate sparse and dense parameters
+        sparse_params = []
+        dense_params = []
+        for module_name, module in self.model.named_modules():
+            for param_name, param in module.named_parameters(recurse=False):
+                if not param.requires_grad:
+                    continue
+                # Detect if this module produces sparse gradients
+                if isinstance(module, torch.nn.Embedding) and module.sparse:
+                    sparse_params.append(param)
+                else:
+                    dense_params.append(param)
+
+        # Create two optimizers
+        optimizers = []
+        if len(dense_params) > 0:
+            optimizers.append(
+                AdamW(
+                    dense_params,
+                    lr=self.args.learning_rate,
+                    weight_decay=self.args.weight_decay,
+                )
+            )
+
+        if len(sparse_params) > 0:
+            optimizers.append(
+                SparseAdam(
+                    sparse_params,
+                    lr=self.args.learning_rate,
+                )
+            )
+
+        if len(sparse_params) > 0 and len(dense_params) == 0:
+            self.args.max_grad_norm = None  # TODO: hacky: gradient clipping does not work with sparse tensors
+        
+        if len(optimizers) == 1:
+            self.optimizer = optimizers[0]
+        elif len(optimizers) == 2:
+            self.optimizer = DualOptimizer(optimizers[0], optimizers[1])
+        else:
+            raise RuntimeError()
+
+        return self.optimizer
+
     def sampled_confidence_logits(self, hidden_states, confidence_head, to_keep_mask):
         # hidden_states: [B*T, hidden_dim]
         # to_keep_mask: [B*T, vocab_size]
@@ -101,7 +190,8 @@ class CustomTrainer(Trainer):
 
         row_idx, col_idx = to_keep_mask.nonzero(as_tuple=True)
         h_selected = hidden_states[row_idx]
-        w_selected = confidence_head.weight[col_idx]
+        w_selected = confidence_head(col_idx)
+        # w_selected = confidence_head.weight[col_idx]
 
         logits = torch.sum(h_selected * w_selected, dim=1)
 

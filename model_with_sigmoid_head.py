@@ -13,11 +13,17 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
             print("pad_token already exists:", self.tokenizer.pad_token)
 
         # Create confidence head with the same shape as the original softmax head
-        self.confidence_head = torch.nn.Linear(
-            self.base_model.lm_head.in_features,
-            self.base_model.lm_head.out_features,
-            bias=False,
-            device=self.base_model.device
+        # self.confidence_head = torch.nn.Linear(
+        #     self.base_model.lm_head.in_features,
+        #     self.base_model.lm_head.out_features,
+        #     bias=False,
+        #     device=self.base_model.device
+        # )
+        self.confidence_head = torch.nn.Embedding(
+            num_embeddings=self.base_model.lm_head.out_features, # vocab size
+            embedding_dim=self.base_model.lm_head.in_features,  # hidden state size
+            device=self.base_model.device,
+            sparse=True
         )
 
     def forward(self, *args, **kwargs):
