@@ -199,34 +199,28 @@ class CustomTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # Compute the original model umembedding output logits and last hidden state
-        outputs = model(
-            **inputs,
-            compute_confidence_logits=False,
-        )
+        with torch.no_grad():
+            outputs = model(
+                **inputs,
+                compute_confidence_logits=False,
+            )
 
         # Get labels, take care of masking the pad tokens and shifting
-        labels = inputs.get("labels")  # [B,T]
-        shift_labels = labels[..., 1:].contiguous()
-        shift_logits = outputs.get('logits')[..., :-1, :].contiguous()  # outputs.get('logits') has shape [B,T,vocab_size]
-        shift_logits = shift_logits.view(-1, shift_logits.size(-1))  # Reshape to [B*T,vocab_size]
-        shift_hidden_states = outputs.get('last_hidden_states')[..., :-1, :].contiguous()  
-        shift_hidden_states = shift_hidden_states.view(-1, shift_hidden_states.size(-1))  # Reshape to [B*T,hidden_size]
-
-        # One-hot encode labels, necessary for BCE
-        one_hot_targets = torch.nn.functional.one_hot(
-            shift_labels.view(-1),         # flatten to [B*T]
-            num_classes=shift_logits.size(-1)  # vocab size
-        ).float()  # shape: [B*T, vocab_size]
+        hidden_size = outputs["last_hidden_states"].size(-1)
+        vocab_size = outputs["logits"].size(-1)
+        shift_labels = inputs.get("labels")[..., 1:].reshape(-1) # [B*T]
+        shift_logits = outputs["logits"][..., :-1, :].reshape(-1, vocab_size)  # outputs.get('logits') has shape [B,T,vocab_size]. Reshape to [B*T,vocab_size]
+        shift_hidden_states = outputs["last_hidden_states"][..., :-1, :].reshape(-1, hidden_size)  # Reshape to [B*T,hidden_size]
 
         # Sample negative tokens
         if self.args.negative_sampling:
             neg_row_idx, neg_col_idx =  self.negative_sampling_mask(
                 torch.nn.functional.log_softmax(shift_logits, dim=-1), 
-                one_hot_targets
+                shift_labels
             )
 
             # Ignore the padding tokens
-            non_padding = shift_labels.view(-1)[neg_row_idx] != self.model.tokenizer.pad_token_id
+            non_padding = shift_labels[neg_row_idx] != self.model.tokenizer.pad_token_id
             neg_row_idx = neg_row_idx[non_padding]
             neg_col_idx = neg_col_idx[non_padding]
 
@@ -240,15 +234,18 @@ class CustomTrainer(Trainer):
                     neg_col_idx
                 )
             # Filter the target 
-            one_hot_targets = one_hot_targets[neg_row_idx,neg_col_idx]
+            one_hot_targets = (neg_col_idx == shift_labels[neg_row_idx]).float()
         else:
             with torch.autocast("cuda", enabled=False):
                 # Full head forward with full precision
                 shift_confidence_logits = model.confidence_head(shift_hidden_states)
             # Ignore padding tokens
-            non_padding_mask = shift_labels.view(-1) != self.model.tokenizer.pad_token_id  # [B*T], bool
-            one_hot_targets = one_hot_targets[non_padding_mask]  # [N_non_pad, vocab_size]
+            non_padding_mask = shift_labels != self.model.tokenizer.pad_token_id  # [B*T], bool
             shift_confidence_logits = shift_confidence_logits[non_padding_mask]
+            one_hot_targets = torch.nn.functional.one_hot(
+                shift_labels[non_padding_mask],
+                num_classes=shift_logits.size(-1)  # vocab size
+            ).float()  # shape: [B*T, vocab_size]
             
         # Calculate the pos_weight, i.e, n_negative / n_positive ratio in the whole batch
         if self.args.weight_positive == "balance":
@@ -284,9 +281,9 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
     
 
-    def create_sampling_distribution(self, single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices):
+    def create_sampling_distribution(self, single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices):
         if single_negative_sampling_method == "random":
-            sampling_distribution = torch.ones_like(labels, dtype=torch.float)
+            sampling_distribution = torch.ones_like(softmax_lprobs, dtype=torch.float)
         elif single_negative_sampling_method == "softmax_probs":
             sampling_distribution = torch.nn.functional.softmax(softmax_lprobs / self.args.temperature_neg_sampling_softmax, dim=-1)
         elif single_negative_sampling_method == "token_freq":
@@ -307,19 +304,19 @@ class CustomTrainer(Trainer):
         :param labels: one-hot encoded LM labels
         :return:
         """
-        sampled_mask = torch.zeros_like(labels, dtype=torch.bool)
-
         if self.args.negative_sampling_avoid_dominant:
             dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, epsilon=0.005)
 
             # Convert dominant_indices to a more convenient format
             # Create a mask for valid indices (i.e., where not -1)
             valid_mask = dominant_indices != -1
+
             # Get row indices (e.g., [0,0,1,1,1,...])
             row_indices = torch.arange(dominant_indices.shape[0], device=dominant_indices.device).unsqueeze(1).expand_as(dominant_indices)
             dominant_row_indices = row_indices[valid_mask]
             # Get column indices from dominant_indices, filtered by valid_mask
             dominant_col_indices = dominant_indices[valid_mask]
+            del dominant_indices, valid_mask
         else:
             dominant_row_indices = None
             dominant_col_indices = None
@@ -328,14 +325,14 @@ class CustomTrainer(Trainer):
         if self.args.combine_neg_distribution == "add":
             sampling_distribution = None
             for single_negative_sampling_method in self.args.negative_sampling_method.split(','):
-                sampling_distribution = self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices) if sampling_distribution is None \
-                                        else sampling_distribution + self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices)
+                sampling_distribution = self.create_sampling_distribution(single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices) if sampling_distribution is None \
+                                        else sampling_distribution + self.create_sampling_distribution(single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices)
             sampled_positions = self.efficient_sampling(sampling_distribution=sampling_distribution, num_samples=self.args.negative_sampling_ratio)
         elif self.args.combine_neg_distribution == "multiply":
             sampling_distribution = None
             for single_negative_sampling_method in self.args.negative_sampling_method.split(','):
-                sampling_distribution = self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices) if sampling_distribution is None \
-                                        else sampling_distribution * self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices)
+                sampling_distribution = self.create_sampling_distribution(single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices) if sampling_distribution is None \
+                                        else sampling_distribution * self.create_sampling_distribution(single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices)
             sampled_positions = self.efficient_sampling(sampling_distribution=sampling_distribution, num_samples=self.args.negative_sampling_ratio)
         elif self.args.combine_neg_distribution == "independent":
             nr_distributions = len(self.args.negative_sampling_method.split(','))
@@ -349,7 +346,7 @@ class CustomTrainer(Trainer):
 
                 sampled_positions.append(
                     self.efficient_sampling(
-                        sampling_distribution=self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices), 
+                        sampling_distribution=self.create_sampling_distribution(single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices), 
                         num_samples=nr_samples)
                 )
             sampled_positions = torch.cat(sampled_positions, dim=-1)
@@ -367,7 +364,8 @@ class CustomTrainer(Trainer):
         del sampled_positions
 
         # Add positive label positions
-        pos_row_idx, pos_col_idx = torch.nonzero(labels == 1, as_tuple=True)
+        pos_row_idx = torch.arange(len(labels), device=labels.device)
+        pos_col_idx = labels
         row_idx_list.append(pos_row_idx)
         col_idx_list.append(pos_col_idx)
 
@@ -376,11 +374,10 @@ class CustomTrainer(Trainer):
         col_idx = torch.cat(col_idx_list)
 
         # Deduplicate
-        pairs = torch.stack([row_idx, col_idx], dim=1)  
-        unique_pairs = torch.unique(pairs, dim=0)
+        unique_pairs = torch.unique(torch.stack([row_idx, col_idx], dim=1), dim=0)
         row_idx = unique_pairs[:, 0]
         col_idx = unique_pairs[:, 1]
-
+        
         return row_idx, col_idx
 
 
