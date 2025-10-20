@@ -278,28 +278,30 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
     
 
+    def create_sampling_distribution(self, single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices):
+        if single_negative_sampling_method == "random":
+            sampling_distribution = torch.ones_like(labels, dtype=torch.float)
+        elif single_negative_sampling_method == "softmax_probs":
+            sampling_distribution = torch.nn.functional.softmax(softmax_lprobs / self.args.temperature_neg_sampling_softmax, dim=-1)
+        elif single_negative_sampling_method == "token_freq":
+            sampling_distribution = self.token_counter.to(softmax_lprobs).repeat(softmax_lprobs.shape[0], 1)
+        else:
+            raise RuntimeError(f"Unknown negative sampling method {single_negative_sampling_method}")
+        
+        if dominant_row_indices is not None and dominant_col_indices is not None:
+            # Don't sample the dominant tokens as negative samples, since we don't know whether they are viable translation options
+            sampling_distribution[dominant_row_indices, dominant_col_indices] = 0
+
+        return sampling_distribution
+        
+
     def negative_sampling_mask(self, softmax_lprobs, labels):
         """
         :param softmax_lprobs: lprobs output by the original softmax head
         :param labels: one-hot encoded LM labels
         :return:
         """
-        softmax_probs = torch.exp(softmax_lprobs)
-
         sampled_mask = torch.zeros_like(labels, dtype=torch.bool)
-        sampling_distributions = []
-        if "random" in self.args.negative_sampling_method:
-            sampling_distributions.append(torch.ones_like(labels, dtype=torch.float))
-        if "softmax_probs" in self.args.negative_sampling_method:
-            sampling_distributions.append(torch.nn.functional.softmax(softmax_lprobs / self.args.temperature_neg_sampling_softmax, dim=-1))
-            # sampling_distributions.append(softmax_probs)
-        if "token_freq" in self.args.negative_sampling_method:
-            sampling_distributions.append(self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1))
-        # elif self.args.negative_sampling_method == "token_freq,softmax_probs":
-        #     sampling_distribution = softmax_probs + self.token_counter.to(softmax_probs).repeat(softmax_probs.shape[0], 1)
-        if len(sampling_distributions) == 0:
-            raise RuntimeError(f"Unknown negative sampling method {self.args.negative_sampling_method}")
-        
 
         if self.args.negative_sampling_avoid_dominant:
             dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, epsilon=0.005)
@@ -309,38 +311,45 @@ class CustomTrainer(Trainer):
             valid_mask = dominant_indices != -1
             # Get row indices (e.g., [0,0,1,1,1,...])
             row_indices = torch.arange(dominant_indices.shape[0], device=dominant_indices.device).unsqueeze(1).expand_as(dominant_indices)
-            row_indices = row_indices[valid_mask]
+            dominant_row_indices = row_indices[valid_mask]
             # Get column indices from dominant_indices, filtered by valid_mask
-            col_indices = dominant_indices[valid_mask]
-
-            # Don't sample the dominant tokens as negative samples, since we don't know whether they are viable translation options
-            for sampling_distribution in sampling_distributions:
-                sampling_distribution[row_indices, col_indices] = 0
-
+            dominant_col_indices = dominant_indices[valid_mask]
+        else:
+            dominant_row_indices = None
+            dominant_col_indices = None
 
         # Combine sampling distributions
         if self.args.combine_neg_distribution == "add":
-            sampling_distribution = torch.stack(sampling_distributions).sum(dim=0)
-            sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
+            sampling_distribution = None
+            for single_negative_sampling_method in self.args.negative_sampling_method.split(','):
+                sampling_distribution = self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices) if sampling_distribution is None \
+                                        else sampling_distribution + self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices)
+            sampled_positions = self.efficient_sampling(sampling_distribution=sampling_distribution, num_samples=self.args.negative_sampling_ratio)
         elif self.args.combine_neg_distribution == "multiply":
-            sampling_distribution = torch.stack(sampling_distributions).prod(dim=0)
-            sampled_positions = torch.multinomial(input=sampling_distribution, num_samples=self.args.negative_sampling_ratio, replacement=False)
+            sampling_distribution = None
+            for single_negative_sampling_method in self.args.negative_sampling_method.split(','):
+                sampling_distribution = self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices) if sampling_distribution is None \
+                                        else sampling_distribution * self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices)
+            sampled_positions = self.efficient_sampling(sampling_distribution=sampling_distribution, num_samples=self.args.negative_sampling_ratio)
         elif self.args.combine_neg_distribution == "independent":
+            nr_distributions = len(self.args.negative_sampling_method.split(','))
             sampled_positions = []
-            for i in range(len(sampling_distributions)):
-                if i == len(sampling_distributions) - 1:
+            for i, single_negative_sampling_method in enumerate(self.args.negative_sampling_method.split(',')):
+                if i == nr_distributions - 1:
                     # Take the rest
-                    nr_samples = self.args.negative_sampling_ratio - i * (self.args.negative_sampling_ratio//len(sampling_distributions))
+                    nr_samples = self.args.negative_sampling_ratio - i * (self.args.negative_sampling_ratio//nr_distributions)
                 else:
-                    nr_samples = self.args.negative_sampling_ratio//len(sampling_distributions)
+                    nr_samples = self.args.negative_sampling_ratio//nr_distributions
 
                 sampled_positions.append(
-                    torch.multinomial(input=sampling_distributions[i], num_samples=nr_samples, replacement=False)
+                    self.efficient_sampling(
+                        sampling_distribution=self.create_sampling_distribution(single_negative_sampling_method, labels, softmax_lprobs, dominant_row_indices, dominant_col_indices), 
+                        num_samples=nr_samples)
                 )
             sampled_positions = torch.cat(sampled_positions, dim=-1)
         else:
             raise NotImplementedError()
-
+        
         sampled_mask.scatter_(dim=-1, index=sampled_positions, value=True)
         del sampled_positions
 
@@ -348,3 +357,21 @@ class CustomTrainer(Trainer):
         sampled_mask[labels == 1] = True
 
         return sampled_mask
+
+
+    def efficient_sampling(self, sampling_distribution, num_samples, cut_off_k=None):
+        if cut_off_k is None or cut_off_k > sampling_distribution.shape[-1]:
+            return torch.multinomial(
+                input=sampling_distribution, 
+                num_samples=num_samples, 
+                replacement=False
+            )
+        else:
+            # topk is done per batch element
+            topk_probs, topk_indices = torch.topk(sampling_distribution, k=cut_off_k, dim=-1)
+            # sample within top-k
+            sampled_local = torch.multinomial(topk_probs, num_samples=num_samples, replacement=False)
+            # map back to global vocab indices
+            sampled_positions = torch.gather(topk_indices, dim=-1, index=sampled_local)
+            return sampled_positions
+
