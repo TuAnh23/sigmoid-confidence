@@ -183,12 +183,11 @@ class CustomTrainer(Trainer):
 
         return self.optimizer
 
-    def sampled_confidence_logits(self, hidden_states, confidence_head, to_keep_mask):
+    def sampled_confidence_logits(self, hidden_states, confidence_head, row_idx, col_idx):
         # hidden_states: [B*T, hidden_dim]
         # to_keep_mask: [B*T, vocab_size]
         # confidence_head.weight [vocab_size, hidden_dim]
 
-        row_idx, col_idx = to_keep_mask.nonzero(as_tuple=True)
         h_selected = hidden_states[row_idx]
         w_selected = confidence_head(col_idx)
         # w_selected = confidence_head.weight[col_idx]
@@ -208,7 +207,6 @@ class CustomTrainer(Trainer):
         # Get labels, take care of masking the pad tokens and shifting
         labels = inputs.get("labels")  # [B,T]
         shift_labels = labels[..., 1:].contiguous()
-        to_keep_mask = shift_labels.view(-1) != self.model.tokenizer.pad_token_id  # ignore padding tokens
         shift_logits = outputs.get('logits')[..., :-1, :].contiguous()  # outputs.get('logits') has shape [B,T,vocab_size]
         shift_logits = shift_logits.view(-1, shift_logits.size(-1))  # Reshape to [B*T,vocab_size]
         shift_hidden_states = outputs.get('last_hidden_states')[..., :-1, :].contiguous()  
@@ -222,35 +220,43 @@ class CustomTrainer(Trainer):
 
         # Sample negative tokens
         if self.args.negative_sampling:
-            to_keep_mask = to_keep_mask.unsqueeze(1).expand(-1, shift_logits.size(-1)) & self.negative_sampling_mask(
+            neg_row_idx, neg_col_idx =  self.negative_sampling_mask(
                 torch.nn.functional.log_softmax(shift_logits, dim=-1), 
                 one_hot_targets
-            )  # shape [B*T, vocab_size]
+            )
 
-            # Calculate the necessary confidence logits according to the mask
+            # Ignore the padding tokens
+            non_padding = shift_labels.view(-1)[neg_row_idx] != self.model.tokenizer.pad_token_id
+            neg_row_idx = neg_row_idx[non_padding]
+            neg_col_idx = neg_col_idx[non_padding]
+
+            # Calculate the necessary confidence logits 
             with torch.autocast("cuda", enabled=False):
                 # Full head forward with full precision
                 shift_confidence_logits = self.sampled_confidence_logits(
                     shift_hidden_states, 
                     model.confidence_head, 
-                    to_keep_mask
+                    neg_row_idx,
+                    neg_col_idx
                 )
-            # Filter the target according to the mask
-            one_hot_targets = one_hot_targets[to_keep_mask]
+            # Filter the target 
+            one_hot_targets = one_hot_targets[neg_row_idx,neg_col_idx]
         else:
             with torch.autocast("cuda", enabled=False):
                 # Full head forward with full precision
                 shift_confidence_logits = model.confidence_head(shift_hidden_states)
+            # Ignore padding tokens
+            non_padding_mask = shift_labels.view(-1) != self.model.tokenizer.pad_token_id  # [B*T], bool
+            one_hot_targets = one_hot_targets[non_padding_mask]  # [N_non_pad, vocab_size]
+            shift_confidence_logits = shift_confidence_logits[non_padding_mask]
             
         # Calculate the pos_weight, i.e, n_negative / n_positive ratio in the whole batch
         if self.args.weight_positive == "balance":
             if self.args.negative_sampling:
                 pos_weight = torch.tensor(self.args.negative_sampling_ratio)
             else:
-                # confidence_target_ignore_pad = confidence_target.clone().int()
-                # confidence_target_ignore_pad.masked_fill_(ignore_mask, -1)
-                n_positive = (one_hot_targets[to_keep_mask] == 1).sum()
-                n_negative = (one_hot_targets[to_keep_mask] == 0).sum()
+                n_positive = (one_hot_targets == 1).sum()
+                n_negative = (one_hot_targets == 0).sum()
                 pos_weight = n_negative / n_positive
                 print("Check if its correctly 1/vocab size")
                 breakpoint()
@@ -350,13 +356,32 @@ class CustomTrainer(Trainer):
         else:
             raise NotImplementedError()
         
-        sampled_mask.scatter_(dim=-1, index=sampled_positions, value=True)
+        # Gather the indices of the kept positions
+        row_idx_list = []
+        col_idx_list = []
+
+        # Extract indices of sampled positions
+        row_indices = torch.arange(sampled_positions.shape[0], device=labels.device).unsqueeze(1).repeat(1, sampled_positions.shape[1])
+        row_idx_list.append(row_indices.reshape(-1))
+        col_idx_list.append(sampled_positions.reshape(-1))
         del sampled_positions
 
-        # Put the positive samples back to the mask
-        sampled_mask[labels == 1] = True
+        # Add positive label positions
+        pos_row_idx, pos_col_idx = torch.nonzero(labels == 1, as_tuple=True)
+        row_idx_list.append(pos_row_idx)
+        col_idx_list.append(pos_col_idx)
 
-        return sampled_mask
+        # Concatenate all indices
+        row_idx = torch.cat(row_idx_list)
+        col_idx = torch.cat(col_idx_list)
+
+        # Deduplicate
+        pairs = torch.stack([row_idx, col_idx], dim=1)  
+        unique_pairs = torch.unique(pairs, dim=0)
+        row_idx = unique_pairs[:, 0]
+        col_idx = unique_pairs[:, 1]
+
+        return row_idx, col_idx
 
 
     def efficient_sampling(self, sampling_distribution, num_samples, cut_off_k=None):
