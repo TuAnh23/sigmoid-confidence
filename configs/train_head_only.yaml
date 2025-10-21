@@ -1,11 +1,12 @@
-model_id: "allenai/OLMo-2-0425-1B-SFT" #"allenai/OLMo-2-0425-1B-SFT" "Unbabel/TowerInstruct-7B-v0.2" "meta-llama/Llama-3.2-1B-Instruct" "allenai/OLMo-7B-0724-SFT-hf" "allenai/OLMo-2-0425-1B-SFT"
+model_id: "Unbabel/TowerInstruct-7B-v0.2" #"allenai/OLMo-2-0425-1B-SFT" "Unbabel/TowerInstruct-7B-v0.2" "meta-llama/Llama-3.2-1B-Instruct" "allenai/OLMo-7B-0724-SFT-hf" "allenai/OLMo-2-0425-1B-SFT"
 
 freeze_base_model: True
 init_sigmoid_head_from_softmax_head: True
 negative_sampling: True
 negative_sampling_ratio: 10
-negative_sampling_method: "token_freq,softmax_probs"
+negative_sampling_method: "token_freq,softmax_probs"  # comma separated if want to combine multiple ones
 combine_neg_distribution: "independent"
 negative_sampling_avoid_dominant: True
 temperature_neg_sampling_softmax: 2
-weight_positive: "None"  # "balance"
+weight_positive: "None"  # "None" "balance"
+head_type: "new_unembedding_head"  # "new_unembedding_head" "rescaling_head"

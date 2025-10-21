@@ -43,14 +43,15 @@ def main():
     )
 
     # Instead of loading base model to GPUs already with device_map="auto", load to CPU first to do the weight copies. The Trainer will handle moving it to GPUs afterwards
-    model = AutoModelForCausalLMWithSigmoidHead(configs.get('model_id')) 
+    model = AutoModelForCausalLMWithSigmoidHead(configs.get('model_id'), head_type=configs.get('head_type'))
 
-    # Preparation before training starts
-    # Copy weights from original head (only on main process)
-    if configs.get('init_sigmoid_head_from_softmax_head'):
-        model.confidence_head.weight.data.copy_(
-            model.base_model.lm_head.weight.data
-        )
+    if configs.get('head_type') == "new_unembedding_head":
+        # Preparation before training starts
+        # Copy weights from original head (only on main process)
+        if configs.get('init_sigmoid_head_from_softmax_head'):
+            model.confidence_head.weight.data.copy_(
+                model.base_model.lm_head.weight.data
+            )
 
     # Freeze all parameters except the new head
     if configs.get('freeze_base_model'):
@@ -92,6 +93,7 @@ def main():
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
         learning_rate=1e-4, # 5e-5
+        lr_scheduler_type="cosine",
         per_device_train_batch_size=configs.get('per_device_train_batch_size'),
         per_device_eval_batch_size=configs.get('per_device_eval_batch_size'),
         gradient_accumulation_steps=configs.get('gradient_accumulation_steps'),
