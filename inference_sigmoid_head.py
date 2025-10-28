@@ -43,7 +43,7 @@ def main():
     )
 
     # 1. Load model and tokenizer
-    model = AutoModelForCausalLMWithSigmoidHead(configs['model_id'])
+    model = AutoModelForCausalLMWithSigmoidHead(configs['model_id'], head_type=configs.get('head_type'))
 
     checkpoint_path = get_best_checkpoint(output_dir)
     state_dict = load_file(f"{checkpoint_path}/model.safetensors")
@@ -94,7 +94,7 @@ def main():
             # Run model inference, get softmax head scores and sigmoid head scores
             if configs.get('force_decoding'):
                 # Score given outputs
-                outputs = model(**batch)
+                outputs = model(**batch, compute_confidence_logits=True)
                 logits = outputs.get('logits')  # [B,T,vocab_size]
                 confidence_logits = outputs.get('confidence_logits')
 
@@ -140,11 +140,20 @@ def main():
                 last_hidden_states = torch.cat(last_hidden_states, dim=1)  
 
                 # Pass last hidden states to the two heads
-                confidence_logits = model.confidence_head(last_hidden_states) 
-                confidence_log_scores = torch.nn.functional.logsigmoid(confidence_logits)
-
                 logits = model.base_model.lm_head(last_hidden_states) 
                 log_scores = torch.nn.functional.log_softmax(logits, dim=-1)
+
+                if model.head_type == "rescaling_head":
+                    confidence_logits = model.confidence_head(logits.view(-1, 1)).view_as(logits)  # confidence head logits
+                elif model.head_type == "new_unembedding_head":
+                    confidence_logits = torch.matmul(
+                        last_hidden_states,  # [batch, seq_len, hidden_dim]
+                        model.confidence_head.weight.T  # [hidden_dim, vocab_size]
+                    )  # confidence head logits
+                else:
+                    raise RuntimeError(f"Unknown head_type {model.head_type}")
+                confidence_log_scores = torch.nn.functional.logsigmoid(confidence_logits)
+                
 
             # Calculate the entropy of the log softmax
             entropy = torch.mul(log_scores, torch.exp(log_scores)).sum(dim=-1)

@@ -42,7 +42,7 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         # TODO: for efficiency, consider cast base model to bfloat16, and only train head with full
-        compute_confidence_logits = kwargs.pop('compute_confidence_logits') if 'compute_confidence_logits' in kwargs.keys() else True 
+        compute_confidence_logits = kwargs.pop('compute_confidence_logits') if 'compute_confidence_logits' in kwargs.keys() else False 
         outputs = self.base_model(
             *args,
             **kwargs,
@@ -55,7 +55,10 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
                 if self.head_type == "rescaling_head":
                     confidence_logits = self.confidence_head(outputs.get('logits').view(-1, 1)).view_as(outputs.get('logits'))  # confidence head logits
                 elif self.head_type == "new_unembedding_head":
-                    confidence_logits = self.confidence_head(outputs.hidden_states[-1])  # confidence head logits
+                    confidence_logits = torch.matmul(
+                        outputs.hidden_states[-1],  # [batch, seq_len, hidden_dim]
+                        self.confidence_head.weight.T  # [hidden_dim, vocab_size]
+                    )  # confidence head logits
                 else:
                     raise RuntimeError(f"Unknown head_type {self.head_type}")
             else:
