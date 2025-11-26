@@ -11,7 +11,7 @@ from sacrebleu.metrics import BLEU, CHRF
 
 
 def min_max_scale(arr):
-    return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
+    return (arr - np.min(arr)) / (np.max(arr) - np.min(arr)) if np.min(arr) != np.max(arr) else np.nan
 
 def under_over_confidence_measure(gold_quality, qe_output):
     data_size = len(qe_output)
@@ -21,6 +21,9 @@ def under_over_confidence_measure(gold_quality, qe_output):
     
     gold_quality = min_max_scale(gold_quality)
     qe_output = min_max_scale(qe_output)
+
+    if np.isnan(gold_quality).any() or np.isnan(qe_output).any():
+        return np.nan, np.nan
     
     under_confidence = (qe_output < gold_quality).sum() / data_size
     over_confidence = (qe_output > gold_quality).sum() / data_size
