@@ -174,7 +174,13 @@ def main():
             results['special_tokens'] = model.tokenizer.all_special_tokens  # these tokens' scores will be ignored, as they don't appear in the output
             for batch_item in range(output_ids.shape[0]):
                 # Find start and end of actual output
-                start_idx = find_start_idx(output_ids[batch_item], model.tokenizer.apply_chat_template("", add_generation_prompt=True)) if configs.get('force_decoding') else 0
+                # First get the generation prompt to decide the start of the output
+                with_gen_prompt = model.tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=True)
+                without_gen_prompt = model.tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False)
+                generation_prompt_ids = with_gen_prompt[len(without_gen_prompt):]
+                print(f"Generation prompt: {model.tokenizer.decode(generation_prompt_ids, skip_special_tokens=False)}")
+                # Now find start and end
+                start_idx = find_start_idx(output_ids[batch_item], generation_prompt_ids) if configs.get('force_decoding') else 0
                 output_ids[batch_item][:start_idx] = model.tokenizer.pad_token_id
                 end_idx = find_eos_idx(output_ids[batch_item], model.tokenizer.eos_token_id)
 
