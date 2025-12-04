@@ -178,7 +178,7 @@ def main():
                 with_gen_prompt = model.tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=True)
                 without_gen_prompt = model.tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False)
                 generation_prompt_ids = with_gen_prompt[len(without_gen_prompt):]
-                print(f"Generation prompt: {model.tokenizer.decode(generation_prompt_ids, skip_special_tokens=False)}")
+                
                 # Now find start and end
                 start_idx = find_start_idx(output_ids[batch_item], generation_prompt_ids) if configs.get('force_decoding') else 0
                 output_ids[batch_item][:start_idx] = model.tokenizer.pad_token_id
