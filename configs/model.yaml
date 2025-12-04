@@ -1,0 +1,2 @@
+model_id: "allenai/OLMo-2-0425-1B-SFT" #"allenai/OLMo-2-0425-1B-SFT" "Unbabel/TowerInstruct-7B-v0.2" "meta-llama/Llama-3.2-1B-Instruct" "allenai/OLMo-7B-0724-SFT-hf" "allenai/OLMo-2-0425-1B-SFT"
+head_type: "new_unembedding_head"  # "new_unembedding_head" "rescaling_head" "full_model_adapters"
