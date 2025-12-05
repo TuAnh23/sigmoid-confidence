@@ -45,7 +45,7 @@ def main():
     # Instead of loading base model to GPUs already with device_map="auto", load to CPU first to do the weight copies. The Trainer will handle moving it to GPUs afterwards
     model = AutoModelForCausalLMWithSigmoidHead(configs.get('model_id'), head_type=configs.get('head_type'))
 
-    if configs.get('head_type') == "new_unembedding_head":
+    if configs.get('head_type') in ["new_unembedding_head", "new_unembedding_head_and_rescaling_head"]:
         # Preparation before training starts
         # Copy weights from original head (only on main process)
         if configs.get('init_sigmoid_head_from_softmax_head'):

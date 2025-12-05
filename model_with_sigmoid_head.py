@@ -37,6 +37,20 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
                 sparse=True,
                 padding_idx=self.tokenizer.pad_token_id
             )
+        elif head_type == "new_unembedding_head_and_rescaling_head":
+            self.confidence_head = torch.nn.Embedding(
+                num_embeddings=self.base_model.lm_head.out_features, # vocab size
+                embedding_dim=self.base_model.lm_head.in_features,  # hidden state size
+                device=self.base_model.device,
+                sparse=True,
+                padding_idx=self.tokenizer.pad_token_id
+            )
+            self.rescaling_head = torch.nn.Linear(
+                1,
+                1,
+                bias=True,
+                device=self.base_model.device
+            )
         else:
             raise RuntimeError(f"Unknown head_type {head_type}")
 
@@ -59,6 +73,14 @@ class AutoModelForCausalLMWithSigmoidHead(torch.nn.Module):
                         outputs.hidden_states[-1],  # [batch, seq_len, hidden_dim]
                         self.confidence_head.weight.T  # [hidden_dim, vocab_size]
                     )  # confidence head logits
+                elif self.head_type == "new_unembedding_head_and_rescaling_head":
+                    # new_unembedding_head
+                    confidence_logits = torch.matmul(
+                        outputs.hidden_states[-1],  # [batch, seq_len, hidden_dim]
+                        self.confidence_head.weight.T  # [hidden_dim, vocab_size]
+                    )  
+                    # rescaling_head
+                    confidence_logits = self.rescaling_head(confidence_logits.view(-1, 1)).view_as(confidence_logits)
                 else:
                     raise RuntimeError(f"Unknown head_type {self.head_type}")
             else:

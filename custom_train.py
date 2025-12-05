@@ -171,7 +171,7 @@ class CustomTrainer(Trainer):
                 )
             )
 
-        if len(sparse_params) > 0 and len(dense_params) == 0:
+        if len(sparse_params) > 0:
             self.args.max_grad_norm = None  # TODO: hacky: gradient clipping does not work with sparse tensors
         
         if len(optimizers) == 1:
@@ -183,19 +183,26 @@ class CustomTrainer(Trainer):
 
         return self.optimizer
 
-    def sampled_confidence_logits(self, hidden_states, original_logits, confidence_head, head_type, row_idx, col_idx):
+    def sampled_confidence_logits(self, hidden_states, original_logits, model, row_idx, col_idx):
         # hidden_states: [B*T, hidden_dim]
         # to_keep_mask: [B*T, vocab_size]
 
-        if head_type == "new_unembedding_head":
+        if model.head_type == "new_unembedding_head":
             h_selected = hidden_states[row_idx]
-            w_selected = confidence_head(col_idx)  # confidence_head.weight [vocab_size, hidden_dim]
+            w_selected = model.confidence_head(col_idx)  # confidence_head.weight [vocab_size, hidden_dim]
             # w_selected = confidence_head.weight[col_idx]
             confidence_logits = torch.sum(h_selected * w_selected, dim=1)
-        elif head_type == "rescaling_head":
-            confidence_logits = confidence_head(original_logits[row_idx,col_idx].view(-1, 1)).view_as(original_logits[row_idx,col_idx])
+        elif model.head_type == "rescaling_head":
+            confidence_logits = model.confidence_head(original_logits[row_idx,col_idx].view(-1, 1)).view_as(original_logits[row_idx,col_idx])
+        elif model.head_type == "new_unembedding_head_and_rescaling_head":
+            h_selected = hidden_states[row_idx]
+            w_selected = model.confidence_head(col_idx)  # confidence_head.weight [vocab_size, hidden_dim]
+            # w_selected = confidence_head.weight[col_idx]
+            confidence_logits = torch.sum(h_selected * w_selected, dim=1)
+
+            confidence_logits = model.rescaling_head(confidence_logits.view(-1, 1)).view_as(confidence_logits)
         else:
-            raise RuntimeError(f"Unknown head_type {head_type}")
+            raise RuntimeError(f"Unknown head_type {model.head_type}")
 
         return confidence_logits
 
@@ -233,8 +240,7 @@ class CustomTrainer(Trainer):
                 shift_confidence_logits = self.sampled_confidence_logits(
                     shift_hidden_states, 
                     shift_logits,
-                    model.confidence_head, 
-                    model.head_type,
+                    model,
                     neg_row_idx,
                     neg_col_idx
                 )
@@ -244,9 +250,20 @@ class CustomTrainer(Trainer):
             with torch.autocast("cuda", enabled=False):
                 # Full head forward with full precision
                 if model.head_type == "new_unembedding_head":
-                    shift_confidence_logits = model.confidence_head(shift_hidden_states)
+                    shift_confidence_logits = torch.matmul(
+                        shift_hidden_states,  # [batch, seq_len, hidden_dim]
+                        model.confidence_head.weight.T  # [hidden_dim, vocab_size]
+                    )
                 elif model.head_type == "rescaling_head":
                     shift_confidence_logits = model.confidence_head((shift_logits.view(-1, 1)).view_as(shift_logits))
+                elif model.head_type == "new_unembedding_head_and_rescaling_head":
+                    # new_unembedding_head
+                    shift_confidence_logits = torch.matmul(
+                        shift_hidden_states,  # [batch, seq_len, hidden_dim]
+                        model.confidence_head.weight.T  # [hidden_dim, vocab_size]
+                    )  
+                    # rescaling_head
+                    shift_confidence_logits = model.rescaling_head(shift_confidence_logits.view(-1, 1)).view_as(shift_confidence_logits)
                 else:
                     raise RuntimeError(f"Unknown head_type {model.head_type}")
             # Ignore padding tokens

@@ -150,6 +150,13 @@ def main():
                         last_hidden_states,  # [batch, seq_len, hidden_dim]
                         model.confidence_head.weight.T  # [hidden_dim, vocab_size]
                     )  # confidence head logits
+                elif model.head_type == "new_unembedding_head_and_rescaling_head":
+                    confidence_logits = torch.matmul(
+                        last_hidden_states,  # [batch, seq_len, hidden_dim]
+                        model.confidence_head.weight.T  # [hidden_dim, vocab_size]
+                    )  # confidence head logits
+
+                    confidence_logits = model.rescaling_head(confidence_logits.view(-1, 1)).view_as(confidence_logits)
                 else:
                     raise RuntimeError(f"Unknown head_type {model.head_type}")
                 confidence_log_scores = torch.nn.functional.logsigmoid(confidence_logits)
