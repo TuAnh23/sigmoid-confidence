@@ -96,7 +96,7 @@ def load_text_file(file_path):
 def load_comet_model(comet_model_root_path=None, model_name="wmt22-cometkiwi-da"):
     from comet import download_model, load_from_checkpoint
 
-    if model_name in ["wmt22-cometkiwi-da", "wmt20-comet-qe-da", "wmt22-comet-da", "wmt23-cometkiwi-da-xl", "XCOMET-XL"]:
+    if model_name in ["wmt22-cometkiwi-da", "wmt20-comet-qe-da", "wmt22-comet-da", "wmt23-cometkiwi-da-xl", "XCOMET-XL", "XCOMET-XXL"]:
         model_path = download_model(f"Unbabel/{model_name}")
     else:
         model_path = f"{comet_model_root_path}/{model_name}/checkpoints/model.ckpt"
