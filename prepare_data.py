@@ -2,11 +2,17 @@ from datasets import Dataset, load_dataset, concatenate_datasets
 from transformers import AutoTokenizer
 import torch
 import os
+import json
+from huggingface_hub import snapshot_download
 
 def line_pairs(src_file, tgt_file):
     with open(src_file, "r", encoding="utf-8") as f_src, open(tgt_file, "r", encoding="utf-8") as f_tgt:
         for src, tgt in zip(f_src, f_tgt):
             yield {"input": src.strip(), "target": tgt.strip()}
+
+def list_pairs(src_list, tgt_list):
+    for src, tgt in zip(src_list, tgt_list):
+        yield {"input": src, "target": tgt}
 
 def _message_spans(messages, tokenizer):
     """
@@ -47,6 +53,11 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
     elif dataname == "pawsx":
         chat_messages = [
             {"role": "user", "content": f"What is a different but equivalent (paraphrase) way of saying: \"{example['input']}\"?\n"},
+            {"role": "assistant", "content": " " + example['target']}
+        ]
+    elif "sciex" in dataname:
+        chat_messages = [
+            {"role": "user", "content": f"You are a university student. Please answer the following JSON-formatted exam question. The subquestions (if any) are indexed. Please give the answers to the question and subquestions that were asked, and index them accordingly in your output. You do not have to provide your output in the JSON format. Here is the question: \n\n{example['input']}"},
             {"role": "assistant", "content": " " + example['target']}
         ]
     else:
@@ -178,6 +189,10 @@ def build_datasets(
         data_repo, lang_pairs = dataname.split('|')
         dataset = load_dataset(data_repo, lang_pairs)
         dataset = dataset['train'].filter(lambda x: not x["is_bad_source"])
+    elif "sciex" in dataname:
+        # Wrap with Hugging Face datasets
+        src_list, tgt_list = load_sciex()
+        dataset = Dataset.from_generator(lambda: list_pairs(src_list, tgt_list))
     else:
         # Wrap with Hugging Face datasets
         dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
@@ -203,3 +218,90 @@ def build_datasets(
         )
 
     return dataset
+
+
+def load_sciex(
+        kept_lang="en"  # "all", "en", "de"
+    ):
+    """
+    Loads the SciEx dataset from Huggingface hub.
+    """
+    # Define helper functions
+    def info_from_exam_path(exam_json_path):
+        exam_name = exam_json_path.split('/')[-2]
+        lang = exam_json_path.split('/')[-1].replace('.json', '').split('_')[-1]
+        assert lang in ['en', 'de']
+        return exam_name, lang
+    
+    def load_json(file_path):
+        with open(file_path, 'r') as f:
+            obj = json.load(f)
+        return obj
+    
+    def is_none(x):
+        if (x is None) or (isinstance(x, str) and x.lower() == "none"):
+            return True
+        return False
+    
+    def return_gold_answer(question, lang):
+        if lang == 'en':
+            same_lang_answer = question['GoldAnswerEnglish'] if not is_none(question['GoldAnswerEnglish']) else None
+            diff_lang_answer = question['GoldAnswerGerman'] if not is_none(question['GoldAnswerGerman']) else None
+        elif lang == 'de':
+            same_lang_answer = question['GoldAnswerGerman'] if not is_none(question['GoldAnswerGerman']) else None
+            diff_lang_answer = question['GoldAnswerEnglish'] if not is_none(question['GoldAnswerEnglish']) else None
+        else:
+            raise RuntimeError(f"Invalid lang `{lang}`")
+
+        if same_lang_answer is not None:
+            return '\n\n'.join(same_lang_answer) if isinstance(same_lang_answer, list) else same_lang_answer
+        elif diff_lang_answer is not None:
+            return '\n\n'.join(diff_lang_answer) if isinstance(diff_lang_answer, list) else diff_lang_answer
+        else:
+            return None
+        
+    def collect_figures(question_dict):
+        figure_list = []
+        if 'Figures' in question_dict:
+            figure_list.extend(question_dict['Figures'])
+        if 'Subquestions' in question_dict:
+            for subquestion_dict in question_dict['Subquestions']:
+                if 'Figures' in subquestion_dict:
+                    figure_list.extend(subquestion_dict['Figures'])
+        return figure_list
+
+    # Download the entire dataset repo
+    local_dir = snapshot_download(
+        repo_id="tuanh23/SciEx",
+        repo_type="dataset"
+    )
+
+    question_list = []
+    gold_answer_list = []
+
+    # Loop though all the files ending with .json
+    exam_files = [
+        os.path.join(root, f)
+        for root, _, files in os.walk(f"{local_dir}/exams_json")
+        for f in files if f.endswith('.json')
+    ]
+    for exam_file in exam_files:
+        exam_name, lang = info_from_exam_path(exam_file)
+        if kept_lang != "all" and lang != kept_lang:
+            continue
+        exam = load_json(exam_file)
+        # Load gold solutions
+        solution_file = f"{local_dir}/human_feedback/{exam_name}/additional_info.json"
+        if not os.path.isfile(solution_file):
+            continue
+        solution = load_json(solution_file)
+        for qid in range(len(exam['Questions'])):
+            exam['Questions'][qid].pop("Index")
+            question = exam['Questions'][qid]
+            question_solution = return_gold_answer(solution['Questions'][qid], lang)
+
+            if question_solution is not None and len(collect_figures(question)) == 0:
+                question_list.append(json.dumps(exam['Questions'][qid]))
+                gold_answer_list.append(question_solution)
+
+    return question_list, gold_answer_list
