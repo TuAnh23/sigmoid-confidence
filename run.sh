@@ -38,16 +38,15 @@ if [[ ${NR_GPUS} == 1 ]]; then
     done
 
     for TEST_SCORE_DATA_CONFIG in "${TEST_SCORE_DATA_CONFIGS[@]}"; do
-        # echo "Inference starts..."
-        # python inference_sigmoid_head.py \
-        #     --config-file-path "configs/force_decoding_and_eval.yaml" ${BATCH_CONFIG} ${TEST_SCORE_DATA_CONFIG} ${MODEL_CONFIG} \
-        #     --wandb-run-id ${WANDB_RUN_ID}
+        echo "Inference starts..."
+        python inference_sigmoid_head.py \
+            --config-file-path "configs/force_decoding_and_eval.yaml" ${BATCH_CONFIG} ${TEST_SCORE_DATA_CONFIG} ${MODEL_CONFIG} \
+            --wandb-run-id ${WANDB_RUN_ID}
 
         echo "Evaluation starts..."
         python evaluate.py \
             --config-file-path "configs/force_decoding_and_eval.yaml" ${TEST_SCORE_DATA_CONFIG} \
-            --wandb-run-id ${WANDB_RUN_ID} \
-            --use-comet-cache
+            --wandb-run-id ${WANDB_RUN_ID}
     done
 
 else
