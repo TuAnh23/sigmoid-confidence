@@ -50,7 +50,7 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
             })
     elif dataname in ["allenai/tulu-3-sft-olmo-2-mixture-0225", "allenai/tulu-3-sft-olmo-2-mixture"]:
         chat_messages = example['messages']
-    elif dataname == "pawsx":
+    elif "pawsx" in dataname:
         chat_messages = [
             {"role": "user", "content": f"What is a different but equivalent (paraphrase) way of saying: \"{example['input']}\"?\n"},
             {"role": "assistant", "content": " " + example['target']}
