@@ -60,6 +60,16 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
             {"role": "user", "content": f"You are a university student. Please answer the following JSON-formatted exam question. The subquestions (if any) are indexed. Please give the answers to the question and subquestions that were asked, and index them accordingly in your output. You do not have to provide your output in the JSON format. Here is the question: \n\n{example['input']}"},
             {"role": "assistant", "content": " " + example['target']}
         ]
+    elif "truthfulqa" in dataname:
+        chat_messages = [
+            {"role": "user", "content": example['Question']},
+            {"role": "assistant", "content": " " + example['Best Answer']}
+        ]
+    elif "gsm8k" in dataname:
+        chat_messages = [
+            {"role": "user", "content": example['question']},
+            {"role": "assistant", "content": " " + example['answer']}
+        ]
     else:
         chat_messages = [
             {"role": "user", "content": f"Translate the following text from {src_lang} into {tgt_lang}.\n{src_lang}: {example['input']}.\n{tgt_lang}: "},
@@ -193,6 +203,10 @@ def build_datasets(
         # Wrap with Hugging Face datasets
         src_list, tgt_list = load_sciex()
         dataset = Dataset.from_generator(lambda: list_pairs(src_list, tgt_list))
+    elif "truthfulqa" in dataname:
+        dataset = load_dataset("domenicrosati/TruthfulQA")['train']
+    elif "gsm8k" in dataname:
+        dataset = load_dataset("openai/gsm8k", 'main')['test']
     else:
         # Wrap with Hugging Face datasets
         dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
