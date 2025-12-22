@@ -4,6 +4,7 @@ import torch
 import os
 import json
 from huggingface_hub import snapshot_download
+import pickle
 
 def line_pairs(src_file, tgt_file):
     with open(src_file, "r", encoding="utf-8") as f_src, open(tgt_file, "r", encoding="utf-8") as f_tgt:
@@ -69,6 +70,11 @@ def example_to_chat_format(example, dataname, src_lang=None, tgt_lang=None):
         chat_messages = [
             {"role": "user", "content": example['question']},
             {"role": "assistant", "content": " " + example['answer']}
+        ]
+    elif "xsum" in dataname:
+        chat_messages = [
+            {"role": "user", "content": f"Summarize the following document in one sentence: \n\n{example['input']}"},
+            {"role": "assistant", "content": " " + example['target']}
         ]
     else:
         chat_messages = [
@@ -139,6 +145,18 @@ def format_raw_strings(example, dataname):
             'src': example['source'],
             'ref': example['target']
         }
+    elif "truthfulqa" in dataname:
+        formatted_example = {
+            'src': example['Question'],
+            'ref': example['Best Answer'],
+            'correct_answers': example['Correct Answers'],
+            'incorrect_answers': example['Incorrect Answers'],
+        }
+    elif "gsm8k" in dataname:
+        formatted_example = {
+            'src': example['question'],
+            'ref': example['answer']
+        }
     else:
         formatted_example = {
             'src': example['input'],
@@ -207,6 +225,12 @@ def build_datasets(
         dataset = load_dataset("domenicrosati/TruthfulQA")['train']
     elif "gsm8k" in dataname:
         dataset = load_dataset("openai/gsm8k", 'main')['test']
+    elif "xsum" in dataname:
+        with open(f"{os.environ.get('ROOT_DIR')}/{src_path}", "rb") as f:
+            src_list = pickle.load(f)
+        with open(f"{os.environ.get('ROOT_DIR')}/{tgt_path}", "rb") as f:
+            tgt_list = pickle.load(f)
+        dataset = Dataset.from_generator(lambda: list_pairs(src_list, tgt_list))
     else:
         # Wrap with Hugging Face datasets
         dataset = Dataset.from_generator(lambda: line_pairs(f"{os.environ.get('ROOT_DIR')}/{src_path}", f"{os.environ.get('ROOT_DIR')}/{tgt_path}"))
