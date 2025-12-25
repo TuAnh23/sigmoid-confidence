@@ -175,6 +175,21 @@ def main():
                      qe_name=configs['comet_qe_baseline'])
     
 
+    # Load self-judge QE
+    model_name = ''.join(c for c in configs['model_id'] if c.isalnum()).lower()
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/{model_name}.txt"
+    if os.path.isfile(cache_path):
+        print(f"Load pre-computed LLM Self Judge score from {cache_path} ...")
+        self_judge_qe_score = load_text_file(cache_path)
+        self_judge_qe_score = [float(x) if x != "None" else np.nan for x in self_judge_qe_score]
+        log_correlations(dataname=configs['dataname'], 
+                        qe_output=self_judge_qe_score, 
+                        pseudo_gold_quality=pseudo_gold_quality, 
+                        human_gold_quality=human_gold_quality,
+                        qe_name="selfjudge", 
+                        agg="")
+    
+
     # Eval scores from model inference
     for k, v in results.items():
         if 'scores' in k:
