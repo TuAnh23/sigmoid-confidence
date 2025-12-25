@@ -17,6 +17,7 @@ import json
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
     parser.add_argument("--wandb-run-id", type=str, required=True)
     parser.add_argument("--manual-inspect", action='store_true', help="If set, will enter a pdb session in every generation step for manual inspection.")
@@ -24,7 +25,7 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    set_seed(0)
+    set_seed(args.seed)
 
     configs = load_yaml_files(args.config_file_paths)
     
@@ -227,7 +228,11 @@ def main():
 
     # Save results to file
     os.makedirs(f"{output_dir}/inference_{configs['dataname']}", exist_ok=True)
-    with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'w') as f:
+    if args.seed == 0:
+        result_path = f"{output_dir}/inference_{configs['dataname']}/results.json"
+    else:
+        result_path = f"{output_dir}/inference_{configs['dataname']}/results_{args.seed}.json"
+    with open(result_path, 'w') as f:
         json.dump(results, f, indent=4)
 
 
