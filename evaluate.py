@@ -175,7 +175,7 @@ def main():
                      qe_name=configs['comet_qe_baseline'])
     
 
-    # Load self-judge QE
+    # Load and eval self-judge QE
     model_name = ''.join(c for c in configs['model_id'] if c.isalnum()).lower()
     cache_path = f"{output_dir}/inference_{configs['dataname']}/{model_name}.txt"
     if os.path.isfile(cache_path):
@@ -188,7 +188,51 @@ def main():
                         human_gold_quality=human_gold_quality,
                         qe_name="selfjudge", 
                         agg="")
-    
+        
+    # Load and eval monte-carlo QE
+    all_seed_results_available = True
+    all_seed_results = []
+    for seed_i in range(1, 11):
+        result_path = f"{output_dir}/inference_{configs['dataname']}/results_{seed_i}.json"
+        if not os.path.isfile(result_path):
+            all_seed_results_available = False
+            break
+        # Load inference results
+        with open(result_path, 'r') as f:
+            all_seed_results.append(json.load(f))
+
+    if not all_seed_results_available:
+        print("Not all seed results are available. Skipping Monte Carlo Sequence Entropy calculation.")
+    else:
+        softmax_lprobs_seqs = [
+            token_to_sentence_scores(token_level_scores=result_seed_i['log_scores'], aggregate="sum") 
+            for result_seed_i in all_seed_results
+        ]
+        sigmoid_lprobs_seqs = [
+            token_to_sentence_scores(token_level_scores=result_seed_i['confidence_log_scores'], aggregate="sum") 
+            for result_seed_i in all_seed_results
+        ]
+
+        mc_qe_softmax = np.exp(
+            np.asarray(softmax_lprobs_seqs).mean(axis=0)
+        )
+        mc_qe_sigmoid = np.exp(
+            np.asarray(sigmoid_lprobs_seqs).mean(axis=0)
+        )
+
+        log_correlations(dataname=configs['dataname'], 
+                        qe_output=mc_qe_softmax, 
+                        pseudo_gold_quality=pseudo_gold_quality, 
+                        human_gold_quality=human_gold_quality,
+                        qe_name="mc_softmax", 
+                        agg="")
+        
+        log_correlations(dataname=configs['dataname'], 
+                        qe_output=mc_qe_sigmoid, 
+                        pseudo_gold_quality=pseudo_gold_quality, 
+                        human_gold_quality=human_gold_quality,
+                        qe_name="mc_sigmoid", 
+                        agg="")
 
     # Eval scores from model inference
     for k, v in results.items():
