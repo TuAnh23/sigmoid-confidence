@@ -8,6 +8,7 @@ import json
 from scipy.stats import pearsonr, spearmanr, kendalltau
 from prepare_data import build_datasets
 from sacrebleu.metrics import BLEU, CHRF
+from sklearn.metrics import log_loss, roc_auc_score, average_precision_score, brier_score_loss
 
 
 def min_max_scale(arr):
@@ -52,34 +53,74 @@ def token_to_sentence_scores(token_level_scores, aggregate):
         raise RuntimeError(f"Invalid value for aggregate: {aggregate}.")
     return sentence_level_scores
 
+def remove_pairwise_nans(x, y):
+    """
+    Remove entries where either x or y is NaN.
+    
+    Parameters
+    ----------
+    x, y : array-like
+        Input arrays of equal length.
+        
+    Returns
+    -------
+    x_clean, y_clean : np.ndarray
+        Arrays with NaN-corresponding entries removed.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    mask = ~np.isnan(x) & ~np.isnan(y)
+    return x[mask], y[mask]
+
 def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg=""):
     if len(qe_output) == 0:
         return
-    under_confidence, over_confidence = under_over_confidence_measure(pseudo_gold_quality, qe_output)
-    wandb.log(
-        {
-            f"{dataname}_{qe_name}{agg}/sent_level_pearsonr": pearsonr(qe_output, pseudo_gold_quality)[0],
-            f"{dataname}_{qe_name}{agg}/sent_level_spearmanr": spearmanr(qe_output, pseudo_gold_quality)[0],
-            f"{dataname}_{qe_name}{agg}/sent_level_kendalltau": kendalltau(qe_output, pseudo_gold_quality)[0],
+    
+    if ('pawsx' in dataname) or ("gsm8k" in dataname) or ("truthfulqa" in dataname):
+        binary_labels = True
+        if "entropy" in qe_name:
+            qe_output = np.array(qe_output)
+            qe_output = (qe_output - qe_output.min()) / (qe_output.max() - qe_output.min())
+    else:
+        binary_labels = False
+    
+    if pseudo_gold_quality is not None:
+        x, y = remove_pairwise_nans(qe_output, pseudo_gold_quality)
+        under_confidence, over_confidence = under_over_confidence_measure(y, x)
+        log_dict = {
+            f"{dataname}_{qe_name}{agg}/sent_level_pearsonr": pearsonr(x, y)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_spearmanr": spearmanr(x, y)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_kendalltau": kendalltau(x, y)[0],
             f"{dataname}_{qe_name}{agg}/sent_level_under_confidence": under_confidence,
             f"{dataname}_{qe_name}{agg}/sent_level_over_confidence": over_confidence
         }
-    )
+        if binary_labels and "log" not in qe_name:
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_bceloss"] = log_loss(y, x),
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_roc_auc_score"] = roc_auc_score(y, x),
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_average_precision_score"] = average_precision_score(y, x),
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_brier_score_loss"] = brier_score_loss(y, x),
+        wandb.log(log_dict)
 
     if human_gold_quality is not None:
-        under_confidence, over_confidence = under_over_confidence_measure(human_gold_quality, qe_output)
-        wandb.log(
-            {
-                f"{dataname}_{qe_name}{agg}/sent_level_pearsonr_humanGold": pearsonr(qe_output, human_gold_quality)[0],
-                f"{dataname}_{qe_name}{agg}/sent_level_spearmanr_humanGold": spearmanr(qe_output, human_gold_quality)[0],
-                f"{dataname}_{qe_name}{agg}/sent_level_kendalltau_humanGold": kendalltau(qe_output, human_gold_quality)[0],
-                f"{dataname}_{qe_name}{agg}/sent_level_under_confidence_humanGold": under_confidence,
-                f"{dataname}_{qe_name}{agg}/sent_level_over_confidence_humanGold": over_confidence
-            }
-        )
+        x, y = remove_pairwise_nans(qe_output, human_gold_quality)
+        under_confidence, over_confidence = under_over_confidence_measure(y, x)
+        log_dict = {
+            f"{dataname}_{qe_name}{agg}/sent_level_pearsonr_humanGold": pearsonr(x, y)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_spearmanr_humanGold": spearmanr(x, y)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_kendalltau_humanGold": kendalltau(x, y)[0],
+            f"{dataname}_{qe_name}{agg}/sent_level_under_confidence_humanGold": under_confidence,
+            f"{dataname}_{qe_name}{agg}/sent_level_over_confidence_humanGold": over_confidence
+        }
+        if binary_labels and "log" not in qe_name:
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_bceloss_humanGold"] = log_loss(y, x),
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_roc_auc_score_humanGold"] = roc_auc_score(y, x),
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_average_precision_score_humanGold"] = average_precision_score(y, x),
+            log_dict[f"{dataname}_{qe_name}{agg}/sent_level_brier_score_loss_humanGold"] = brier_score_loss(y, x),
+        wandb.log(log_dict)
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
     parser.add_argument("--wandb-run-id", type=str, required=True)
     parser.add_argument("--use-comet-cache", action='store_true', 
@@ -123,26 +164,6 @@ def main():
     with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'r') as f:
         results = json.load(f)
 
-    # Calculate ref-based gold quality
-    cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_ref_based']}.txt"
-    if os.path.isfile(cache_path) and args.use_comet_cache:
-        print("Load pre-computed ref-based COMET ...")
-        pseudo_gold_quality = load_text_file(cache_path)
-        pseudo_gold_quality = [float(x) for x in pseudo_gold_quality]
-    else:
-        print("Running ref-based COMET  ...")
-        comet_ref_based = load_comet_model(model_name=configs['comet_ref_based'])
-        pseudo_gold_quality = comet_ref_based.predict(
-            format_for_comet(src, results['pred_txt'], ref), batch_size=4, gpus=1
-        ).scores
-        write_text_file(pseudo_gold_quality, cache_path)
-
-    # Log the system-level quality, also with some traditional metrics
-    wandb.log({
-        f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(pseudo_gold_quality),
-        f"{configs['dataname']}_BLEU": BLEU().corpus_score(results['pred_txt'], [ref]).score,
-        f"{configs['dataname']}_chrF2": CHRF().corpus_score(results['pred_txt'], [ref]).score,
-    })
 
     human_gold_quality = None
     if configs.get('force_decoding'):
@@ -153,27 +174,68 @@ def main():
             f"{configs['dataname']}_humanScore": np.mean(human_gold_quality)
         })
 
-    # Calculate and eval supervised baseline
-    if configs["comet_qe_baseline"] != "None":
-        cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_qe_baseline']}.txt"
+    if ("wmt" in configs['dataname']) or ("ParaCrawl" in configs['dataname']) or ("biomqm" in configs['dataname']):
+        # Specific to translation test sets (using COMET models as pseudo ground-truth and supervised baseline)
+        # Calculate COMET ref-based gold quality
+        cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_ref_based']}.txt"
         if os.path.isfile(cache_path) and args.use_comet_cache:
-            print("Loading COMET QE baseline ...")
-            qe_output = load_text_file(cache_path)
-            qe_output = [float(x) for x in qe_output]
+            print("Load pre-computed ref-based COMET ...")
+            pseudo_gold_quality = load_text_file(cache_path)
+            pseudo_gold_quality = [float(x) for x in pseudo_gold_quality]
         else:
-            print("Running COMET QE baseline ...")
-            comet_qe_sys = load_comet_model(model_name=configs['comet_qe_baseline'])
-            qe_output = comet_qe_sys.predict(
-                format_for_comet(src, results['pred_txt']), batch_size=4, gpus=1
+            print("Running ref-based COMET  ...")
+            comet_ref_based = load_comet_model(model_name=configs['comet_ref_based'])
+            pseudo_gold_quality = comet_ref_based.predict(
+                format_for_comet(src, results['pred_txt'], ref), batch_size=4, gpus=1
             ).scores
-            write_text_file(qe_output, cache_path)
+            write_text_file(pseudo_gold_quality, cache_path)
 
-    log_correlations(dataname=configs['dataname'], 
-                     qe_output=qe_output, 
-                     pseudo_gold_quality=pseudo_gold_quality, 
-                     human_gold_quality=human_gold_quality,
-                     qe_name=configs['comet_qe_baseline'])
-    
+        # Log the system-level quality, also with some traditional metrics
+        wandb.log({
+            f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(pseudo_gold_quality),
+            f"{configs['dataname']}_BLEU": BLEU().corpus_score(results['pred_txt'], [ref]).score,
+            f"{configs['dataname']}_chrF2": CHRF().corpus_score(results['pred_txt'], [ref]).score,
+        })
+
+        # Calculate and eval supervised baseline
+        if configs["comet_qe_baseline"] != "None":
+            cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_qe_baseline']}.txt"
+            if os.path.isfile(cache_path) and args.use_comet_cache:
+                print("Loading COMET QE baseline ...")
+                qe_output = load_text_file(cache_path)
+                qe_output = [float(x) for x in qe_output]
+            else:
+                print("Running COMET QE baseline ...")
+                comet_qe_sys = load_comet_model(model_name=configs['comet_qe_baseline'])
+                qe_output = comet_qe_sys.predict(
+                    format_for_comet(src, results['pred_txt']), batch_size=4, gpus=1
+                ).scores
+                write_text_file(qe_output, cache_path)
+
+        log_correlations(dataname=configs['dataname'], 
+                        qe_output=qe_output, 
+                        pseudo_gold_quality=pseudo_gold_quality, 
+                        human_gold_quality=human_gold_quality,
+                        qe_name=configs['comet_qe_baseline'])
+    else:
+        # Not MT dataset, use LLM-as-a-Judge as pseudo ground truth
+        # Load ref-based gold quality
+        cache_path = f"{output_dir}/inference_{configs['dataname']}/qwen25_72B.txt"
+        if os.path.isfile(cache_path):
+            print(f"Load pre-computed LLM-as-a-judge score from {cache_path} ...")
+            pseudo_gold_quality = load_text_file(cache_path)
+            pseudo_gold_quality = [float(x) if x != "None" else np.nan for x in pseudo_gold_quality]
+
+            # Log the system-level quality
+            wandb.log({
+                f"{configs['dataname']}_qwen25_72B": np.mean(pseudo_gold_quality)
+            })
+        elif not configs.get('force_decoding'):
+            print("Please compute LLM-as-a-Judge score as ground truth first!")
+            exit(0)
+        else:
+            pseudo_gold_quality = None
+
 
     # Load and eval self-judge QE
     model_name = ''.join(c for c in configs['model_id'] if c.isalnum()).lower()
