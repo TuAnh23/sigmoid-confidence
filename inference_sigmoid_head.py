@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
     parser.add_argument("--wandb-run-id", type=str, required=True)
     parser.add_argument("--manual-inspect", action='store_true', help="If set, will enter a pdb session in every generation step for manual inspection.")
+    parser.add_argument("--use-conf-head-for-generation", action='store_true', default=False)
 
     args = parser.parse_args()
     print(args)
@@ -45,6 +46,11 @@ def main():
 
     # 1. Load model and tokenizer
     model = AutoModelForCausalLMWithSigmoidHead(configs['model_id'], head_type=configs.get('head_type'))
+
+    if args.use_conf_head_for_generation:
+        print("WARNING: not yet well implemented, did not consider all confidence head types.")
+        with torch.no_grad():
+            model.base_model.lm_head.weight.data.copy_(model.confidence_head.weight.data)
 
     checkpoint_path = get_best_checkpoint(output_dir)
     state_dict = load_file(f"{checkpoint_path}/model.safetensors")
