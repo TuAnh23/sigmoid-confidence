@@ -112,3 +112,32 @@ def write_text_file(lines, file_path):
     with open(file_path, 'w') as f:
         for line in lines:
             f.write(f"{line}\n")
+
+def rank_preserving_adjust(A, B, eps=1e-3):
+    """
+    A, B: torch tensors of shape [..., X]
+    eps: relative minimum separation
+    """
+    # Sort by B (descending) along last dimension
+    order = torch.argsort(B, dim=-1, descending=True)
+    A_sorted = torch.gather(A, -1, order)
+
+    # Create strictly decreasing upper bounds
+    # bound[i] = A_sorted[i-1] * (1 - eps)
+    shifted = A_sorted[..., :-1] * (1 - eps)
+    shifted = torch.cat([
+        torch.full_like(A_sorted[..., :1], float('inf')),
+        shifted
+    ], dim=-1)
+
+    # Enforce monotonic decrease via cumulative minimum
+    C_sorted = torch.minimum(
+        A_sorted,
+        torch.cummin(shifted, dim=-1).values
+    )
+
+    # Scatter back to original order
+    C = torch.empty_like(C_sorted)
+    C.scatter_(-1, order, C_sorted)
+
+    return C

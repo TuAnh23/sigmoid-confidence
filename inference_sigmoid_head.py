@@ -5,7 +5,7 @@ import wandb
 from transformers import set_seed
 import argparse
 import os
-from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, find_start_idx
+from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, find_start_idx, rank_preserving_adjust
 from boostedprob import calculate_boostedprob
 from prepare_data import build_datasets
 from torch.utils.data import DataLoader
@@ -174,7 +174,9 @@ def main():
 
             # Calculate boosted prob of the log softmax
             boosted_prob = calculate_boostedprob(log_probs=log_scores, target=output_ids)
+            weighted_boosted_prob = calculate_boostedprob(log_probs=log_scores, target=output_ids, ue_method="weighted_sum_dominant_mass")
             log_boosted_prob = torch.log(boosted_prob + 1e-10)  # Add small value to avoid log(0)
+            log_weighted_boosted_prob = torch.log(weighted_boosted_prob + 1e-10)  # Add small value to avoid log(0)
 
             # Gather the scores of the predicted tokens
             pred_log_scores = torch.gather(log_scores, -1, output_ids.unsqueeze(-1)).squeeze(-1)
@@ -183,6 +185,10 @@ def main():
             # Log scores to scores
             pred_scores = torch.exp(pred_log_scores)
             pred_confidence_scores = torch.exp(pred_confidence_log_scores)
+
+            # Calculate combined sigmoid and softmax output
+            combined_scores = rank_preserving_adjust(torch.exp(confidence_log_scores), torch.exp(log_scores))
+            pred_combined_scores = torch.gather(combined_scores, -1, output_ids.unsqueeze(-1)).squeeze(-1)
 
             # Store output
             results['special_tokens'] = model.tokenizer.all_special_tokens  # these tokens' scores will be ignored, as they don't appear in the output
@@ -209,6 +215,9 @@ def main():
                 results['entropy_scores'].append(entropy[batch_item][start_idx:end_idx].cpu().tolist())
                 results['boosted_prob_scores'].append(boosted_prob[batch_item][start_idx:end_idx].cpu().tolist())
                 results['log_boosted_prob_scores'].append(log_boosted_prob[batch_item][start_idx:end_idx].cpu().tolist())
+                results['weighted_boosted_prob_scores'].append(weighted_boosted_prob[batch_item][start_idx:end_idx].cpu().tolist())
+                results['log_weighted_boosted_prob_scores'].append(log_weighted_boosted_prob[batch_item][start_idx:end_idx].cpu().tolist())
+                results['combined_scores'].append(pred_combined_scores[batch_item][start_idx:end_idx].cpu().tolist())
 
                 if args.manual_inspect:
                     for j in range(end_idx-start_idx):
