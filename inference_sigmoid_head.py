@@ -2,7 +2,7 @@ import torch
 from safetensors.torch import load_file
 from model_with_sigmoid_head import AutoModelForCausalLMWithSigmoidHead
 import wandb
-from transformers import set_seed
+from transformers import set_seed, LogitsProcessor
 import argparse
 import os
 from utils import load_yaml_files, get_best_checkpoint, find_eos_idx, find_start_idx, rank_preserving_adjust
@@ -13,6 +13,37 @@ import time
 from collections import defaultdict
 from tqdm import tqdm 
 import json
+
+
+class ConfidenceHeadLogitsProcessor(LogitsProcessor):
+    """
+    LogitsProcessor that applies sigmoid activation instead of softmax.
+    This is used when the confidence head has already replaced the LM head weights.
+    This avoids the need to rerun the forward pass at every generation step.
+    """
+    def __init__(self, head_type):
+        self.head_type = head_type
+        
+    def __call__(self, input_ids, scores):
+        """
+        Args:
+            input_ids: [batch_size, seq_len] - the input token ids
+            scores: [batch_size, vocab_size] - the logits from the confidence head
+        
+        Returns:
+            Log-sigmoid scores for sampling
+        """
+        # The scores already come from the confidence head (weights were swapped)
+        # We just need to apply sigmoid instead of softmax
+        if self.head_type == "new_unembedding_head":
+            # Apply log-sigmoid activation
+            confidence_log_probs = torch.nn.functional.logsigmoid(scores)
+            return confidence_log_probs
+        else:
+            raise NotImplementedError(
+                f"--use-conf-head-for-generation is only implemented for 'new_unembedding_head', "
+                f"but got head_type='{self.head_type}'"
+            )
 
 
 def main():
@@ -47,11 +78,6 @@ def main():
     # 1. Load model and tokenizer
     model = AutoModelForCausalLMWithSigmoidHead(configs['model_id'], head_type=configs.get('head_type'))
 
-    if args.use_conf_head_for_generation:
-        print("WARNING: not yet well implemented, did not consider all confidence head types.")
-        with torch.no_grad():
-            model.base_model.lm_head.weight.data.copy_(model.confidence_head.weight.data)
-
     checkpoint_path = get_best_checkpoint(output_dir)
     state_dict = load_file(f"{checkpoint_path}/model.safetensors")
     model.load_state_dict(state_dict)
@@ -59,6 +85,24 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
+
+    # Replace LM head with confidence head if flag is enabled
+    logits_processor = None
+    if args.use_conf_head_for_generation:
+        if model.head_type == "new_unembedding_head":
+            print(f"""Replacing LM head weights with confidence head weights for generation.
+                  Not yet change the transformer generation loop to use sigmoid.
+                  So currently this setting does not work with sampling, but only greedy/beam search""")
+            with torch.no_grad():
+                # Copy confidence head weights to LM head
+                model.base_model.lm_head.weight.data.copy_(model.confidence_head.weight.data)
+            print(f"LM head replaced. Will use LogitsProcessor to apply sigmoid activation.")
+            logits_processor = [ConfidenceHeadLogitsProcessor(model.head_type)]
+        else:
+            raise NotImplementedError(
+                f"--use-conf-head-for-generation is only implemented for 'new_unembedding_head', "
+                f"but got head_type='{model.head_type}'"
+            )
 
     # 2. Prepare test data
     if configs.get('force_decoding'):
@@ -130,7 +174,8 @@ def main():
                     num_beams=1,
                     temperature=1.0,
                     top_p=0.95,
-                    max_length=configs['max_length']
+                    max_length=configs['max_length'],
+                    logits_processor=logits_processor
                 )
                 output_ids = outputs['sequences']  # [batch_size, total_max_length]
                 output_ids = output_ids[:, batch['input_ids'].shape[-1]:] # [batch_size, generation_max_length]
