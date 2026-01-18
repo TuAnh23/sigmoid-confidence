@@ -79,6 +79,7 @@ def main():
     model = AutoModelForCausalLMWithSigmoidHead(configs['model_id'], head_type=configs.get('head_type'))
 
     checkpoint_path = get_best_checkpoint(output_dir)
+    wandb.log({"best_checkpoint": checkpoint_path})
     state_dict = load_file(f"{checkpoint_path}/model.safetensors")
     model.load_state_dict(state_dict)
 
@@ -170,12 +171,9 @@ def main():
                     output_hidden_states=True,
                     return_dict_in_generate=True, 
                     output_scores=True,
-                    do_sample=True,
-                    num_beams=1,
-                    temperature=1.0,
-                    top_p=0.95,
                     max_length=configs['max_length'],
-                    logits_processor=logits_processor
+                    logits_processor=logits_processor,
+                    **configs['generation_kwargs']
                 )
                 output_ids = outputs['sequences']  # [batch_size, total_max_length]
                 output_ids = output_ids[:, batch['input_ids'].shape[-1]:] # [batch_size, generation_max_length]

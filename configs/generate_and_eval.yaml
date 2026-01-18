@@ -1,3 +1,8 @@
 comet_qe_baseline: "wmt22-cometkiwi-da"
 comet_ref_based: "XCOMET-XL"
 force_decoding: False
+generation_kwargs:
+  do_sample: True
+  num_beams: 1
+  temperature: 1.0
+  top_p: 0.95
