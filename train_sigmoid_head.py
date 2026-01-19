@@ -69,7 +69,9 @@ def main():
         tgt_path=configs.get('train_tgt_path'), 
         src_lang=configs.get('src_lang'), 
         tgt_lang=configs.get('tgt_lang'), 
-        split='train'
+        split='train',
+        mqm_deduplicate=configs.get('mqm_deduplicate'),  # MQM deduplication mode
+        mqm_filter_no_annotations=configs.get('mqm_filter_no_annotations', False),  # Filter samples without annotations
     )
 
     eval_dataset = build_datasets(
@@ -80,7 +82,9 @@ def main():
         tgt_path=configs.get('dev_tgt_path'),
         src_lang=configs.get('src_lang'),
         tgt_lang=configs.get('tgt_lang'),
-        split='dev'
+        split='dev',
+        mqm_deduplicate=configs.get('mqm_deduplicate'),  # MQM deduplication mode
+        mqm_filter_no_annotations=configs.get('mqm_filter_no_annotations', False),  # Filter samples without annotations
     )
 
     training_args = CustomTrainingArguments(
@@ -114,6 +118,8 @@ def main():
         temperature_neg_sampling_softmax=configs.get('temperature_neg_sampling_softmax'),
         weight_positive=configs.get('weight_positive'),
         freeze_base_model=configs.get('freeze_base_model'),
+        find_dominant_kwargs=configs.get('find_dominant_kwargs', {}),
+        mqm_training_mode=configs.get('mqm_training_mode', False),  # Enable MQM token-level training mode
         )
 
     trainer = CustomTrainer(

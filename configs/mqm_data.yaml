@@ -1,0 +1,29 @@
+# MQM Error Spans Training Configuration
+# Dataset: RicardoRei/wmt-mqm-error-spans from Hugging Face
+# 
+# This config enables MQM token-level training mode where:
+# - Tokens overlapping with error spans are treated as negatives only (no additional sampling)
+# - Correct tokens are trained with the standard positive + negative sampling approach
+#
+# The MQM dataset contains machine translation outputs with human-annotated error spans,
+# which we use to create token-level labels for confidence training.
+
+dataname: "RicardoRei/wmt-mqm-error-spans"
+
+# MQM-specific training settings
+mqm_training_mode: True
+
+# MQM deduplication mode (optional):
+# - null: No deduplication (keep all samples)
+# - "src": Keep only one sample per unique source sentence
+# - "src_mt": Keep only one sample per unique (source, MT) pair
+# - "src_mt_annotations": Keep only one sample per unique (source, MT, annotations) triple
+mqm_deduplicate: "src_mt"  # Recommended: removes exact duplicates while keeping different MTs
+
+# Filter out samples without error annotations (optional)
+# - False: Keep all samples (default), samples without annotations have all tokens as "correct"
+# - True: Remove samples without annotations (train only on samples with explicit errors)
+mqm_filter_no_annotations: False
+
+# Maximum sequence length for tokenization
+max_length: 896

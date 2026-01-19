@@ -7,3 +7,8 @@ combine_neg_distribution: "independent"
 negative_sampling_avoid_dominant: True
 temperature_neg_sampling_softmax: 2
 weight_positive: "None"  # "None" "balance"
+find_dominant_kwargs:
+  cut_point_mode: "first"
+  find_dominant_method: "difference_jump"
+  p_jump: 0.3
+  epsilon: 0.005

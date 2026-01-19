@@ -85,6 +85,8 @@ class CustomTrainingArguments(TrainingArguments):
         temperature_neg_sampling_softmax=1.0,
         weight_positive="balance",
         freeze_base_model=True,
+        mqm_training_mode=False,  # Enable MQM token-level training mode
+        find_dominant_kwargs={},
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -96,6 +98,8 @@ class CustomTrainingArguments(TrainingArguments):
         self.temperature_neg_sampling_softmax = temperature_neg_sampling_softmax
         self.weight_positive = weight_positive
         self.freeze_base_model = freeze_base_model
+        self.find_dominant_kwargs = find_dominant_kwargs
+        self.mqm_training_mode = mqm_training_mode
 
 
 class CustomTrainer(Trainer):
@@ -206,25 +210,142 @@ class CustomTrainer(Trainer):
 
         return confidence_logits
 
-
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        # Compute the original model umembedding output logits and last hidden state
+    def _forward_and_shift(self, model, inputs):
+        """
+        Forward pass through the model and shift tensors for next-token prediction.
+        
+        Returns:
+            tuple: (shift_labels, shift_logits, shift_hidden_states, outputs)
+        """
         with torch.no_grad():
             outputs = model(
                 **inputs,
                 compute_confidence_logits=False,
             )
 
-        # Get labels, take care of masking the pad tokens and shifting
         hidden_size = outputs["last_hidden_states"].size(-1)
         vocab_size = outputs["logits"].size(-1)
-        shift_labels = inputs.get("labels")[..., 1:].reshape(-1) # [B*T]
-        shift_logits = outputs["logits"][..., :-1, :].reshape(-1, vocab_size)  # outputs.get('logits') has shape [B,T,vocab_size]. Reshape to [B*T,vocab_size]
-        shift_hidden_states = outputs["last_hidden_states"][..., :-1, :].reshape(-1, hidden_size)  # Reshape to [B*T,hidden_size]
+        shift_labels = inputs.get("labels")[..., 1:].reshape(-1)  # [B*T]
+        shift_logits = outputs["logits"][..., :-1, :].reshape(-1, vocab_size)  # [B*T, vocab_size]
+        shift_hidden_states = outputs["last_hidden_states"][..., :-1, :].reshape(-1, hidden_size)  # [B*T, hidden_size]
 
-        # Sample negative tokens
+        return shift_labels, shift_logits, shift_hidden_states, outputs
+
+    def _compute_loss_from_samples(self, model, outputs, shift_hidden_states, shift_logits, 
+                                    row_idx, col_idx, targets, pos_weight=None):
+        """
+        Compute confidence logits for sampled positions and return BCE loss.
+        Used when negative_sampling=True.
+        
+        Args:
+            model: The model
+            outputs: Model outputs dict (will be modified with final loss)
+            shift_hidden_states: Hidden states [B*T, hidden_size]
+            shift_logits: Original logits [B*T, vocab_size]
+            row_idx: Row indices for sampled positions
+            col_idx: Column indices for sampled positions
+            targets: Target values (0 or 1) for each sampled position
+            pos_weight: Optional positive class weight for BCE loss
+            
+        Returns:
+            tuple: (loss, outputs)
+        """
+        # Calculate confidence logits for selected positions
+        with torch.autocast("cuda", enabled=False):
+            shift_confidence_logits = self.sampled_confidence_logits(
+                shift_hidden_states,
+                shift_logits,
+                model,
+                row_idx,
+                col_idx
+            )
+
+        # BCE loss
+        bce_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        bce_loss = bce_loss_fn(shift_confidence_logits, targets)
+
+        # Combine with base model loss if not frozen
+        if self.args.freeze_base_model:
+            loss = bce_loss
+        else:
+            loss = bce_loss + outputs.get('loss')
+
+        outputs['loss'] = loss
+        return loss, outputs
+
+    def _compute_loss_full_vocab(self, model, outputs, shift_hidden_states, shift_logits, shift_labels):
+        """
+        Compute confidence logits for full vocabulary and return BCE loss.
+        Used when negative_sampling=False.
+        
+        Args:
+            model: The model
+            outputs: Model outputs dict (will be modified with final loss)
+            shift_hidden_states: Hidden states [B*T, hidden_size]
+            shift_logits: Original logits [B*T, vocab_size]
+            shift_labels: Labels [B*T]
+            
+        Returns:
+            tuple: (loss, outputs)
+        """
+        with torch.autocast("cuda", enabled=False):
+            if model.head_type == "new_unembedding_head":
+                shift_confidence_logits = torch.matmul(
+                    shift_hidden_states,
+                    model.confidence_head.weight.T
+                )
+            elif model.head_type == "rescaling_head":
+                shift_confidence_logits = model.confidence_head(shift_logits.view(-1, 1)).view_as(shift_logits)
+            elif model.head_type == "new_unembedding_head_and_rescaling_head":
+                shift_confidence_logits = torch.matmul(
+                    shift_hidden_states,
+                    model.confidence_head.weight.T
+                )
+                shift_confidence_logits = model.rescaling_head(shift_confidence_logits.view(-1, 1)).view_as(shift_confidence_logits)
+            else:
+                raise RuntimeError(f"Unknown head_type {model.head_type}")
+
+        # Ignore padding tokens
+        non_padding_mask = shift_labels != self.model.tokenizer.pad_token_id
+        shift_confidence_logits = shift_confidence_logits[non_padding_mask]
+        one_hot_targets = torch.nn.functional.one_hot(
+            shift_labels[non_padding_mask],
+            num_classes=shift_logits.size(-1)
+        ).float()
+
+        # Calculate pos_weight
+        if self.args.weight_positive == "balance":
+            n_positive = (one_hot_targets == 1).sum()
+            n_negative = (one_hot_targets == 0).sum()
+            pos_weight = n_negative / n_positive
+        else:
+            pos_weight = None
+
+        # BCE loss
+        bce_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        bce_loss = bce_loss_fn(shift_confidence_logits, one_hot_targets)
+
+        # Combine with base model loss if not frozen
+        if self.args.freeze_base_model:
+            loss = bce_loss
+        else:
+            loss = bce_loss + outputs.get('loss')
+
+        outputs['loss'] = loss
+        return loss, outputs
+
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        # Dispatch to MQM training mode if enabled
+        if self.args.mqm_training_mode:
+            return self.compute_loss_mqm(model, inputs, return_outputs, num_items_in_batch)
+        
+        # Forward pass and shift for next-token prediction
+        shift_labels, shift_logits, shift_hidden_states, outputs = self._forward_and_shift(model, inputs)
+
         if self.args.negative_sampling:
-            neg_row_idx, neg_col_idx =  self.negative_sampling_mask(
+            # Sample negative tokens
+            neg_row_idx, neg_col_idx = self.negative_sampling_mask(
                 torch.nn.functional.log_softmax(shift_logits, dim=-1), 
                 shift_labels
             )
@@ -234,79 +355,116 @@ class CustomTrainer(Trainer):
             neg_row_idx = neg_row_idx[non_padding]
             neg_col_idx = neg_col_idx[non_padding]
 
-            # Calculate the necessary confidence logits 
-            with torch.autocast("cuda", enabled=False):
-                # Full head forward with full precision
-                shift_confidence_logits = self.sampled_confidence_logits(
-                    shift_hidden_states, 
-                    shift_logits,
-                    model,
-                    neg_row_idx,
-                    neg_col_idx
-                )
-            # Filter the target 
-            one_hot_targets = (neg_col_idx == shift_labels[neg_row_idx]).float()
-        else:
-            with torch.autocast("cuda", enabled=False):
-                # Full head forward with full precision
-                if model.head_type == "new_unembedding_head":
-                    shift_confidence_logits = torch.matmul(
-                        shift_hidden_states,  # [batch, seq_len, hidden_dim]
-                        model.confidence_head.weight.T  # [hidden_dim, vocab_size]
-                    )
-                elif model.head_type == "rescaling_head":
-                    shift_confidence_logits = model.confidence_head((shift_logits.view(-1, 1)).view_as(shift_logits))
-                elif model.head_type == "new_unembedding_head_and_rescaling_head":
-                    # new_unembedding_head
-                    shift_confidence_logits = torch.matmul(
-                        shift_hidden_states,  # [batch, seq_len, hidden_dim]
-                        model.confidence_head.weight.T  # [hidden_dim, vocab_size]
-                    )  
-                    # rescaling_head
-                    shift_confidence_logits = model.rescaling_head(shift_confidence_logits.view(-1, 1)).view_as(shift_confidence_logits)
-                else:
-                    raise RuntimeError(f"Unknown head_type {model.head_type}")
-            # Ignore padding tokens
-            non_padding_mask = shift_labels != self.model.tokenizer.pad_token_id  # [B*T], bool
-            shift_confidence_logits = shift_confidence_logits[non_padding_mask]
-            one_hot_targets = torch.nn.functional.one_hot(
-                shift_labels[non_padding_mask],
-                num_classes=shift_logits.size(-1)  # vocab size
-            ).float()  # shape: [B*T, vocab_size]
+            # Target is 1 if col_idx matches the label, 0 otherwise
+            targets = (neg_col_idx == shift_labels[neg_row_idx]).float()
+            pos_weight = torch.tensor(self.args.negative_sampling_ratio) if self.args.weight_positive == "balance" else None
             
-        # Calculate the pos_weight, i.e, n_negative / n_positive ratio in the whole batch
-        if self.args.weight_positive == "balance":
-            if self.args.negative_sampling:
-                pos_weight = torch.tensor(self.args.negative_sampling_ratio)
-            else:
-                n_positive = (one_hot_targets == 1).sum()
-                n_negative = (one_hot_targets == 0).sum()
-                pos_weight = n_negative / n_positive
-                print("Check if its correctly 1/vocab size")
-                breakpoint()
+            loss, outputs = self._compute_loss_from_samples(
+                model, outputs, shift_hidden_states, shift_logits,
+                neg_row_idx, neg_col_idx, targets, pos_weight
+            )
         else:
-            pos_weight = None
-
-        # BCE loss for new head
-        bce_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        
-        bce_loss = bce_loss_fn(
-            shift_confidence_logits, 
-            one_hot_targets,
-        )
-
-        if self.args.freeze_base_model:
-            loss = bce_loss
-        else:
-            # TODO: check the scale of the two losses
-            breakpoint()
-            loss = bce_loss + outputs.get('loss')
-
-        # Overwrite base_model loss with the new loss that consider the sigmoid head
-        outputs['loss'] = loss
+            # Full vocabulary computation
+            loss, outputs = self._compute_loss_full_vocab(
+                model, outputs, shift_hidden_states, shift_logits, shift_labels
+            )
 
         return (loss, outputs) if return_outputs else loss
     
+
+    def compute_loss_mqm(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """
+        MQM (Machine Translation Quality Metrics) Training Mode.
+        
+        Training behavior:
+        - Tokens with mqm_label = 1 (correct): positive target + N sampled negatives
+        - Tokens with mqm_label = 0 (erroneous): single negative only (no additional sampling)
+        - Tokens with mqm_label = -1 (ignored): skip entirely
+        
+        Implementation notes:
+        - We use lists (row_idx_list, col_idx_list, target_list) to collect samples from 
+          two different sources: (1) correct tokens with negative sampling, and (2) erroneous 
+          tokens as single negatives. These are concatenated at the end for a single loss computation.
+        - mapped_row_idx is needed because negative_sampling_mask() returns indices relative to 
+          the filtered correct_logits tensor (0 to len(correct_indices)-1), but we need indices 
+          into the original shift_* tensors. We map back via: mapped_row_idx = correct_indices[neg_row_idx]
+        """
+        # Forward pass and shift for next-token prediction
+        shift_labels, shift_logits, shift_hidden_states, outputs = self._forward_and_shift(model, inputs)
+        
+        # Get MQM token labels (shifted to align with predictions)
+        shift_mqm_labels = inputs.get("mqm_token_labels")[..., 1:].reshape(-1)  # [B*T]
+        
+        # Create masks for different token types
+        non_padding_mask = shift_labels != self.model.tokenizer.pad_token_id
+        non_ignored_mask = shift_mqm_labels != -1
+        valid_mask = non_padding_mask & non_ignored_mask
+        
+        correct_mask = valid_mask & (shift_mqm_labels == 1)
+        error_mask = valid_mask & (shift_mqm_labels == 0)
+        
+        correct_indices = torch.where(correct_mask)[0]
+        error_indices = torch.where(error_mask)[0]
+        
+        # Lists to accumulate samples from different sources before concatenation
+        row_idx_list = []   # Indices into shift_* tensors (row dimension)
+        col_idx_list = []   # Token IDs (column dimension / vocabulary)
+        target_list = []    # Binary targets: 1 for correct, 0 for incorrect
+        
+        # Handle correct tokens (mqm_label = 1): positive + negative sampling
+        if len(correct_indices) > 0:
+            correct_labels = shift_labels[correct_indices]
+            correct_logits = shift_logits[correct_indices]
+            
+            if self.args.negative_sampling:
+                # negative_sampling_mask returns indices relative to correct_logits (0 to len-1)
+                neg_row_idx, neg_col_idx = self.negative_sampling_mask(
+                    torch.nn.functional.log_softmax(correct_logits, dim=-1),
+                    correct_labels
+                )
+                # Map back to original shift_* tensor indices
+                mapped_row_idx = correct_indices[neg_row_idx]
+                row_idx_list.append(mapped_row_idx)
+                col_idx_list.append(neg_col_idx)
+                # Target is 1 only for the actual label token, 0 for sampled negatives
+                target_list.append((neg_col_idx == correct_labels[neg_row_idx]).float())
+            else:
+                row_idx_list.append(correct_indices)
+                col_idx_list.append(correct_labels)
+                target_list.append(torch.ones(len(correct_indices), device=correct_labels.device))
+        
+        # Handle erroneous tokens (mqm_label = 0): single negative only
+        if len(error_indices) > 0:
+            error_labels = shift_labels[error_indices]
+            row_idx_list.append(error_indices)
+            col_idx_list.append(error_labels)
+            target_list.append(torch.zeros(len(error_indices), device=error_labels.device))
+        
+        # Edge case: no valid tokens
+        if len(row_idx_list) == 0:
+            loss = torch.tensor(0.0, device=shift_logits.device, requires_grad=True)
+            outputs['loss'] = loss
+            return (loss, outputs) if return_outputs else loss
+        
+        row_idx = torch.cat(row_idx_list)
+        col_idx = torch.cat(col_idx_list)
+        targets = torch.cat(target_list)
+        
+        # Calculate pos_weight for class imbalance
+        if self.args.weight_positive == "balance":
+            n_positive = (targets == 1).sum().float()
+            n_negative = (targets == 0).sum().float()
+            pos_weight = (n_negative / n_positive if n_positive > 0 else torch.tensor(1.0)).to(shift_logits.device)
+        else:
+            pos_weight = None
+        
+        loss, outputs = self._compute_loss_from_samples(
+            model, outputs, shift_hidden_states, shift_logits,
+            row_idx, col_idx, targets, pos_weight
+        )
+        
+        return (loss, outputs) if return_outputs else loss
+
 
     def create_sampling_distribution(self, single_negative_sampling_method, softmax_lprobs, dominant_row_indices, dominant_col_indices):
         if single_negative_sampling_method == "random":
@@ -332,7 +490,7 @@ class CustomTrainer(Trainer):
         :return:
         """
         if self.args.negative_sampling_avoid_dominant:
-            dominant_indices = find_dominant(softmax_lprobs, find_dominant_method='difference_jump', p_jump=0.3, epsilon=0.005)
+            dominant_indices = find_dominant(softmax_lprobs, **self.args.find_dominant_kwargs)
 
             # Convert dominant_indices to a more convenient format
             # Create a mask for valid indices (i.e., where not -1)
