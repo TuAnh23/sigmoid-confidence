@@ -1,5 +1,5 @@
 freeze_base_model: True
-init_sigmoid_head_from_softmax_head: True
+init_sigmoid_head: "lm_head"  # "lm_head" or path to a sigmoid checkpoint
 negative_sampling: True
 negative_sampling_ratio: 10
 negative_sampling_method: "token_freq,softmax_probs"  # comma separated if want to combine multiple ones

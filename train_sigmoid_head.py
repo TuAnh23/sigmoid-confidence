@@ -7,6 +7,7 @@ import time
 from custom_train import CustomTrainingArguments, CustomTrainer
 import wandb
 from utils import load_yaml_files
+from safetensors.torch import load_file
 
 def main():
     parser = argparse.ArgumentParser(description="Train a sigmoid head for a model.")
@@ -48,10 +49,18 @@ def main():
     if configs.get('head_type') in ["new_unembedding_head", "new_unembedding_head_and_rescaling_head"]:
         # Preparation before training starts
         # Copy weights from original head (only on main process)
-        if configs.get('init_sigmoid_head_from_softmax_head'):
-            model.confidence_head.weight.data.copy_(
-                model.base_model.lm_head.weight.data
-            )
+        if configs.get('init_sigmoid_head') is not None:
+            if configs.get('init_sigmoid_head') == "lm_head":
+                model.confidence_head.weight.data.copy_(
+                    model.base_model.lm_head.weight.data
+                )
+            else:
+                # Should be a path to a trained sigmoid head
+                assert os.path.exists(configs.get('init_sigmoid_head'))
+                state_dict = load_file(f"{configs.get('init_sigmoid_head')}/model.safetensors")
+                model.confidence_head.load_state_dict(state_dict)
+            print(f"Initialized from {configs.get('init_sigmoid_head')}")
+
 
     # Freeze all parameters except the new head
     if configs.get('freeze_base_model'):
@@ -89,6 +98,8 @@ def main():
 
     training_args = CustomTrainingArguments(
         output_dir=output_dir,
+        num_train_epochs=configs.get('num_train_epochs', 3),  # Default high, rely on early stopping
+        max_steps=configs.get('max_steps', -1),  # -1 means no limit (use epochs instead)
         eval_steps=configs.get('eval_steps'),
         eval_strategy='steps',
         save_steps=configs.get('save_steps'),
@@ -96,7 +107,7 @@ def main():
         logging_steps=10,
         logging_strategy='steps',
         logging_dir=f"{output_dir}/logs",
-        learning_rate=1e-4, # 5e-5
+        learning_rate=float(configs.get('learning_rate', 1e-4)),
         lr_scheduler_type="cosine",
         per_device_train_batch_size=configs.get('per_device_train_batch_size'),
         per_device_eval_batch_size=configs.get('per_device_eval_batch_size'),
@@ -127,7 +138,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=configs.get('early_stopping_patience', 3))],
     )
 
     checkpoints = [os.path.join(output_dir, d) for d in os.listdir(output_dir)
