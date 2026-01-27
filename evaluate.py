@@ -9,10 +9,305 @@ from scipy.stats import pearsonr, spearmanr, kendalltau
 from prepare_data import build_datasets
 from sacrebleu.metrics import BLEU, CHRF
 from sklearn.metrics import log_loss, roc_auc_score, average_precision_score, brier_score_loss
+from collections import defaultdict
 
 
 def min_max_scale(arr):
     return (arr - np.min(arr)) / (np.max(arr) - np.min(arr)) if np.min(arr) != np.max(arr) else np.nan
+
+
+def pairwise_accuracy_with_ties(gold_scores, metric_scores, epsilon=0.0):
+    """
+    Calculate pairwise accuracy (acc23 variant) for a single group.
+    
+    For each pair of translations:
+    - Concordant: metric and gold agree on ranking
+    - Discordant: metric and gold disagree
+    - tie_gold_only: gold says equal, metric says different
+    - tie_metric_only: metric says equal, gold says different
+    - tie_both: both say equal
+    
+    acc23 = (concordant + tie_both) / total_pairs
+    
+    Args:
+        gold_scores: List/array of gold quality scores for this group
+        metric_scores: List/array of metric scores for this group  
+        epsilon: Threshold for considering metric scores as tied
+        
+    Returns:
+        Tuple of (accuracy, num_pairs)
+    """
+    n = len(gold_scores)
+    if n < 2:
+        return np.nan, 0
+    
+    concordant = 0
+    discordant = 0
+    tie_gold_only = 0
+    tie_metric_only = 0
+    tie_both = 0
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            g_i, g_j = gold_scores[i], gold_scores[j]
+            m_i, m_j = metric_scores[i], metric_scores[j]
+            
+            # Skip if any is NaN
+            if np.isnan(g_i) or np.isnan(g_j) or np.isnan(m_i) or np.isnan(m_j):
+                continue
+            
+            # Determine gold ranking
+            if g_i == g_j:
+                gold_tie = True
+            else:
+                gold_tie = False
+                gold_i_better = g_i > g_j
+            
+            # Determine metric ranking (with epsilon threshold for ties)
+            if abs(m_i - m_j) <= epsilon:
+                metric_tie = True
+            else:
+                metric_tie = False
+                metric_i_better = m_i > m_j
+            
+            # Classify the pair
+            if gold_tie and metric_tie:
+                tie_both += 1
+            elif gold_tie and not metric_tie:
+                tie_gold_only += 1
+            elif not gold_tie and metric_tie:
+                tie_metric_only += 1
+            elif gold_i_better == metric_i_better:
+                concordant += 1
+            else:
+                discordant += 1
+    
+    total_pairs = concordant + discordant + tie_gold_only + tie_metric_only + tie_both
+    
+    if total_pairs == 0:
+        return np.nan, 0
+    
+    # acc23 formula: gives credit for correctly predicting ties
+    accuracy = (concordant + tie_both) / total_pairs
+    
+    return accuracy, total_pairs
+
+
+class _RankedPair:
+    """Maintains metadata for a ranked pair for calculating Kendall's tau efficiently."""
+    
+    def __init__(self, g1, g2, m1, m2, item_id):
+        self.item_id = item_id
+        self.diff = abs(m1 - m2)
+        
+        # Determine stats when treated normally (no tie introduced)
+        gold_tie = (g1 == g2)
+        metric_tie = (m1 == m2)
+        
+        if gold_tie and metric_tie:
+            self.con, self.dis, self.t_gold, self.t_metric, self.t_both = 0, 0, 0, 0, 1
+        elif gold_tie:
+            self.con, self.dis, self.t_gold, self.t_metric, self.t_both = 0, 0, 1, 0, 0
+        elif metric_tie:
+            self.con, self.dis, self.t_gold, self.t_metric, self.t_both = 0, 0, 0, 1, 0
+        elif (g1 > g2 and m1 > m2) or (g1 < g2 and m1 < m2):
+            self.con, self.dis, self.t_gold, self.t_metric, self.t_both = 1, 0, 0, 0, 0
+        else:
+            self.con, self.dis, self.t_gold, self.t_metric, self.t_both = 0, 1, 0, 0, 0
+        
+        # Determine stats when a tie is introduced in metric (epsilon >= diff)
+        if gold_tie:
+            self.tie_con, self.tie_dis, self.tie_t_gold, self.tie_t_metric, self.tie_t_both = 0, 0, 0, 0, 1
+        else:
+            self.tie_con, self.tie_dis, self.tie_t_gold, self.tie_t_metric, self.tie_t_both = 0, 0, 0, 1, 0
+
+
+def find_optimal_epsilon(gold_scores_by_item, metric_scores_by_item, sample_rate=1.0):
+    """
+    Find the optimal epsilon threshold that maximizes group-by-item accuracy.
+    
+    Uses an efficient incremental algorithm: sort pairs by metric difference,
+    then sweep through thresholds updating statistics incrementally.
+    
+    Complexity: O(P log P) where P is total number of pairs, instead of O(T * P).
+    
+    Args:
+        gold_scores_by_item: Dict mapping item_id -> list of gold scores
+        metric_scores_by_item: Dict mapping item_id -> list of metric scores
+        sample_rate: Proportion of pairs to sample (1.0 = all pairs)
+        
+    Returns:
+        Tuple of (best_epsilon, best_accuracy)
+    """
+    # Enumerate all pairs with their statistics
+    pairs = []
+    item_ids = set()
+    
+    for item_id in gold_scores_by_item:
+        gold = gold_scores_by_item[item_id]
+        metric = metric_scores_by_item[item_id]
+        n = len(gold)
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                g_i, g_j = gold[i], gold[j]
+                m_i, m_j = metric[i], metric[j]
+                
+                # Skip NaN pairs
+                if np.isnan(g_i) or np.isnan(g_j) or np.isnan(m_i) or np.isnan(m_j):
+                    continue
+                
+                # Sample pairs if sample_rate < 1
+                if sample_rate < 1.0 and np.random.random() > sample_rate:
+                    continue
+                
+                pairs.append(_RankedPair(g_i, g_j, m_i, m_j, item_id))
+                item_ids.add(item_id)
+    
+    if not pairs:
+        return 0.0, np.nan
+    
+    num_items = len(item_ids)
+    
+    # Initialize per-item statistics (concordant + ties_both for acc23)
+    item_stats = {item_id: {'con': 0, 't_both': 0, 'total': 0} for item_id in item_ids}
+    
+    for pair in pairs:
+        item_stats[pair.item_id]['con'] += pair.con
+        item_stats[pair.item_id]['t_both'] += pair.t_both
+        item_stats[pair.item_id]['total'] += 1
+    
+    # Calculate initial accuracy (epsilon = 0)
+    def calc_avg_accuracy():
+        accs = []
+        for item_id in item_ids:
+            stats = item_stats[item_id]
+            if stats['total'] > 0:
+                accs.append((stats['con'] + stats['t_both']) / stats['total'])
+        return np.mean(accs) if accs else np.nan
+    
+    thresholds = [0.0]
+    taus = [calc_avg_accuracy()]
+    
+    # Sort pairs by their metric difference
+    pairs.sort(key=lambda p: p.diff)
+    
+    # Sweep through thresholds, incrementally updating statistics
+    for pair in pairs:
+        # Remove old stats, add tie stats (as if epsilon >= pair.diff)
+        item_stats[pair.item_id]['con'] -= pair.con
+        item_stats[pair.item_id]['con'] += pair.tie_con
+        item_stats[pair.item_id]['t_both'] -= pair.t_both
+        item_stats[pair.item_id]['t_both'] += pair.tie_t_both
+        
+        avg_acc = calc_avg_accuracy()
+        
+        # If same threshold as last, update; otherwise add new
+        if thresholds[-1] == pair.diff:
+            taus[-1] = avg_acc
+        else:
+            thresholds.append(pair.diff)
+            taus.append(avg_acc)
+    
+    # Find best
+    best_idx = np.nanargmax(taus)
+    return thresholds[best_idx], taus[best_idx]
+
+
+def groupby_item_accuracy_with_tie_calibration(
+    src_sentences, 
+    gold_scores, 
+    metric_scores, 
+    sample_rate=1.0,
+    return_details=False
+):
+    """
+    Calculate group-by-item segment-level accuracy with tie calibration (acc*eq).
+    
+    This implements the meta-evaluation metric from the WMT Metrics Shared Task,
+    as described in "Ties Matter: Meta-Evaluating Modern Metrics with Pairwise
+    Accuracy and Tie Calibration" (Deutsch et al., 2023).
+    
+    The metric:
+    1. Groups translations by their source sentence (exact match)
+    2. For each group, calculates pairwise ranking accuracy between metric and gold
+    3. Automatically calibrates a tie threshold (epsilon) to optimize accuracy
+    4. Averages accuracy across all items (source sentences)
+    
+    Args:
+        src_sentences: List of source sentences (used for grouping)
+        gold_scores: List of gold quality scores (e.g., human MQM scores)
+        metric_scores: List of metric scores to evaluate
+        sample_rate: Proportion of pairs to sample for epsilon search (1.0 = all)
+        return_details: If True, return additional details
+        
+    Returns:
+        If return_details=False: (accuracy, optimal_epsilon)
+        If return_details=True: (accuracy, optimal_epsilon, num_items, accuracies_per_item)
+    """
+    # Remove pairwise NaNs
+    valid_indices = [
+        i for i in range(len(gold_scores))
+        if not np.isnan(gold_scores[i]) and not np.isnan(metric_scores[i])
+    ]
+    
+    if not valid_indices:
+        if return_details:
+            return np.nan, 0.0, 0, {}
+        return np.nan, 0.0
+    
+    # Group by source sentence
+    gold_by_src = defaultdict(list)
+    metric_by_src = defaultdict(list)
+    
+    for idx in valid_indices:
+        src = src_sentences[idx]
+        gold_by_src[src].append(gold_scores[idx])
+        metric_by_src[src].append(metric_scores[idx])
+    
+    # Filter out groups with only one translation (can't compute pairwise accuracy)
+    valid_items = [src for src in gold_by_src if len(gold_by_src[src]) >= 2]
+    
+    if not valid_items:
+        if return_details:
+            return np.nan, 0.0, 0, {}
+        return np.nan, 0.0
+    
+    # Keep only valid items
+    gold_by_src_filtered = {src: gold_by_src[src] for src in valid_items}
+    metric_by_src_filtered = {src: metric_by_src[src] for src in valid_items}
+    
+    # Find optimal epsilon through tie calibration
+    best_epsilon, _ = find_optimal_epsilon(
+        gold_by_src_filtered, 
+        metric_by_src_filtered, 
+        sample_rate
+    )
+    
+    # Calculate final accuracy with optimal epsilon
+    accuracies_per_item = {}
+    for src in valid_items:
+        acc, num_pairs = pairwise_accuracy_with_ties(
+            gold_by_src_filtered[src], 
+            metric_by_src_filtered[src], 
+            best_epsilon
+        )
+        if not np.isnan(acc):
+            accuracies_per_item[src] = acc
+    
+    if not accuracies_per_item:
+        if return_details:
+            return np.nan, best_epsilon, 0, {}
+        return np.nan, best_epsilon
+    
+    avg_accuracy = np.mean(list(accuracies_per_item.values()))
+    num_items = len(accuracies_per_item)
+    
+    if return_details:
+        return avg_accuracy, best_epsilon, num_items, accuracies_per_item
+    
+    return avg_accuracy, best_epsilon
+
 
 def under_over_confidence_measure(gold_quality, qe_output):
     data_size = len(qe_output)
@@ -73,7 +368,7 @@ def remove_pairwise_nans(x, y):
     mask = ~np.isnan(x) & ~np.isnan(y)
     return x[mask], y[mask]
 
-def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg=""):
+def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg="", src_sentences=None):
     if len(qe_output) == 0:
         return
     
@@ -95,6 +390,23 @@ def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_qualit
             f"{dataname}_{qe_name}{agg}/sent_level_under_confidence": under_confidence,
             f"{dataname}_{qe_name}{agg}/sent_level_over_confidence": over_confidence
         }
+        
+        # Add group-by-item accuracy with tie calibration (WMT Metrics acc*eq)
+        # Only compute if we have source sentences for grouping
+
+        if src_sentences is not None and len(src_sentences) == len(qe_output):
+            try:
+                acc_eq, opt_epsilon = groupby_item_accuracy_with_tie_calibration(
+                    src_sentences, 
+                    np.array(pseudo_gold_quality, dtype=float), 
+                    np.array(qe_output, dtype=float),
+                    sample_rate=1.0
+                )
+                log_dict[f"{dataname}_{qe_name}{agg}/sent_level_acc_eq"] = acc_eq
+                log_dict[f"{dataname}_{qe_name}{agg}/sent_level_acc_eq_epsilon"] = opt_epsilon
+            except Exception as e:
+                print(f"Warning: Could not compute acc_eq for pseudo_gold: {e}")
+        
         if binary_labels and "log" not in qe_name:
             log_dict[f"{dataname}_{qe_name}{agg}/sent_level_bceloss"] = log_loss(y, x),
             log_dict[f"{dataname}_{qe_name}{agg}/sent_level_roc_auc_score"] = roc_auc_score(y, x),
@@ -112,6 +424,22 @@ def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_qualit
             f"{dataname}_{qe_name}{agg}/sent_level_under_confidence_humanGold": under_confidence,
             f"{dataname}_{qe_name}{agg}/sent_level_over_confidence_humanGold": over_confidence
         }
+        
+        # Add group-by-item accuracy with tie calibration (WMT Metrics acc*eq)
+        # Only compute if we have source sentences for grouping
+        if src_sentences is not None and len(src_sentences) == len(qe_output):
+            try:
+                acc_eq, opt_epsilon = groupby_item_accuracy_with_tie_calibration(
+                    src_sentences, 
+                    np.array(human_gold_quality, dtype=float), 
+                    np.array(qe_output, dtype=float),
+                    sample_rate=1.0
+                )
+                log_dict[f"{dataname}_{qe_name}{agg}/sent_level_acc_eq_humanGold"] = acc_eq
+                log_dict[f"{dataname}_{qe_name}{agg}/sent_level_acc_eq_epsilon_humanGold"] = opt_epsilon
+            except Exception as e:
+                print(f"Warning: Could not compute acc_eq for human_gold: {e}")
+        
         if binary_labels and "log" not in qe_name:
             log_dict[f"{dataname}_{qe_name}{agg}/sent_level_bceloss_humanGold"] = log_loss(y, x),
             log_dict[f"{dataname}_{qe_name}{agg}/sent_level_roc_auc_score_humanGold"] = roc_auc_score(y, x),
@@ -219,7 +547,8 @@ def main():
                         qe_output=qe_output, 
                         pseudo_gold_quality=pseudo_gold_quality, 
                         human_gold_quality=human_gold_quality,
-                        qe_name=configs['comet_qe_baseline'])
+                        qe_name=configs['comet_qe_baseline'],
+                        src_sentences=None)
     else:
         # Not MT dataset, use LLM-as-a-Judge as pseudo ground truth
         # Load ref-based gold quality
@@ -252,7 +581,8 @@ def main():
                         pseudo_gold_quality=pseudo_gold_quality, 
                         human_gold_quality=human_gold_quality,
                         qe_name="selfjudge", 
-                        agg="")
+                        agg="",
+                        src_sentences=None)
         
     # Load and eval monte-carlo QE
     all_seed_results_available = True
@@ -290,14 +620,16 @@ def main():
                         pseudo_gold_quality=pseudo_gold_quality, 
                         human_gold_quality=human_gold_quality,
                         qe_name="mc_softmax", 
-                        agg="")
+                        agg="",
+                        src_sentences=None)
         
         log_correlations(dataname=configs['dataname'], 
                         qe_output=mc_qe_sigmoid, 
                         pseudo_gold_quality=pseudo_gold_quality, 
                         human_gold_quality=human_gold_quality,
                         qe_name="mc_sigmoid", 
-                        agg="")
+                        agg="",
+                        src_sentences=None)
 
     # Eval scores from model inference
     for k, v in results.items():
@@ -310,7 +642,8 @@ def main():
                                      pseudo_gold_quality=pseudo_gold_quality, 
                                      human_gold_quality=human_gold_quality,
                                      qe_name=k, 
-                                     agg=aggregate)
+                                     agg=aggregate,
+                                     src_sentences=None)
             else:
                 for aggregate in ["prod", "mean"]:
                     qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
@@ -319,7 +652,8 @@ def main():
                                      pseudo_gold_quality=pseudo_gold_quality, 
                                      human_gold_quality=human_gold_quality,
                                      qe_name=k, 
-                                     agg=aggregate)
+                                     agg=aggregate,
+                                     src_sentences=None)
     
 
 if __name__ == "__main__":
