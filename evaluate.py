@@ -160,16 +160,19 @@ def main():
     src = list(test_dataset['src'])
     ref = list(test_dataset['ref'])
 
+    write_text_file(src, f"{output_dir}/inference_{configs['dataname']}/src.txt")
+    write_text_file(ref, f"{output_dir}/inference_{configs['dataname']}/ref.txt")
+
     # Load inference results
     with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'r') as f:
         results = json.load(f)
-
 
     human_gold_quality = None
     if configs.get('force_decoding'):
         # This is the setting where we do forced decoding on translations where human quality scores are available
         human_gold_quality = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}")
         human_gold_quality = [float(x) for x in human_gold_quality]
+        write_text_file(human_gold_quality, f"{output_dir}/inference_{configs['dataname']}/human_gold.txt")
         wandb.log({
             f"{configs['dataname']}_humanScore": np.mean(human_gold_quality)
         })
