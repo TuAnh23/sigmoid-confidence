@@ -10,6 +10,7 @@ from prepare_data import build_datasets
 from sacrebleu.metrics import BLEU, CHRF
 from sklearn.metrics import log_loss, roc_auc_score, average_precision_score, brier_score_loss
 from collections import defaultdict
+from transformers import AutoTokenizer
 
 
 def min_max_scale(arr):
@@ -368,6 +369,413 @@ def remove_pairwise_nans(x, y):
     mask = ~np.isnan(x) & ~np.isnan(y)
     return x[mask], y[mask]
 
+def calculate_comet_ref_gold(src, pred_txt, ref, configs, output_dir, use_comet_cache):
+    """Calculate COMET ref-based gold quality scores."""
+    if ref is None:
+        return None
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_ref_based']}.txt"
+    if os.path.isfile(cache_path) and use_comet_cache:
+        print("Load pre-computed ref-based COMET ...")
+        pseudo_gold_quality = load_text_file(cache_path)
+        pseudo_gold_quality = [float(x) for x in pseudo_gold_quality]
+    else:
+        print("Running ref-based COMET  ...")
+        comet_ref_based = load_comet_model(model_name=configs['comet_ref_based'])
+        pseudo_gold_quality = comet_ref_based.predict(
+            format_for_comet(src, pred_txt, ref), batch_size=4, gpus=1
+        ).scores
+        write_text_file(pseudo_gold_quality, cache_path)
+
+    # Log the system-level quality, also with some traditional metrics
+    wandb.log({
+        f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(pseudo_gold_quality),
+        f"{configs['dataname']}_BLEU": BLEU().corpus_score(pred_txt, [ref]).score,
+        f"{configs['dataname']}_chrF2": CHRF().corpus_score(pred_txt, [ref]).score,
+    })
+    
+    return pseudo_gold_quality
+
+
+def calculate_comet_qe_baseline(src, pred_txt, configs, output_dir, use_comet_cache, 
+                                 pseudo_gold_quality, human_gold_quality):
+    """Calculate and eval supervised COMET QE baseline."""
+    if configs["comet_qe_baseline"] == "None":
+        return
+    
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_qe_baseline']}.txt"
+    if os.path.isfile(cache_path) and use_comet_cache:
+        print("Loading COMET QE baseline ...")
+        qe_output = load_text_file(cache_path)
+        qe_output = [float(x) for x in qe_output]
+    else:
+        print("Running COMET QE baseline ...")
+        comet_qe_sys = load_comet_model(model_name=configs['comet_qe_baseline'])
+        qe_output = comet_qe_sys.predict(
+            format_for_comet(src, pred_txt), batch_size=4, gpus=1
+        ).scores
+        write_text_file(qe_output, cache_path)
+
+    log_correlations(dataname=configs['dataname'], 
+                    qe_output=qe_output, 
+                    pseudo_gold_quality=pseudo_gold_quality, 
+                    human_gold_quality=human_gold_quality,
+                    qe_name=configs['comet_qe_baseline'],
+                    src_sentences=None)
+
+
+def calculate_llm_judge_gold(configs, output_dir):
+    """Load LLM-as-a-Judge pseudo ground truth for non-MT datasets."""
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/qwen25_72B.txt"
+    if os.path.isfile(cache_path):
+        print(f"Load pre-computed LLM-as-a-judge score from {cache_path} ...")
+        pseudo_gold_quality = load_text_file(cache_path)
+        pseudo_gold_quality = [float(x) if x != "None" else np.nan for x in pseudo_gold_quality]
+
+        # Log the system-level quality
+        wandb.log({
+            f"{configs['dataname']}_qwen25_72B": np.mean(pseudo_gold_quality)
+        })
+        return pseudo_gold_quality
+    elif not configs.get('force_decoding'):
+        print("Please compute LLM-as-a-Judge score as ground truth first!")
+        exit(0)
+    else:
+        return None
+
+
+def eval_self_judge_qe(configs, output_dir, pseudo_gold_quality, human_gold_quality):
+    """Load and eval self-judge QE scores."""
+    model_name = ''.join(c for c in configs['model_id'] if c.isalnum()).lower()
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/{model_name}.txt"
+    if os.path.isfile(cache_path):
+        print(f"Load pre-computed LLM Self Judge score from {cache_path} ...")
+        self_judge_qe_score = load_text_file(cache_path)
+        self_judge_qe_score = [float(x) if x != "None" else np.nan for x in self_judge_qe_score]
+        log_correlations(dataname=configs['dataname'], 
+                        qe_output=self_judge_qe_score, 
+                        pseudo_gold_quality=pseudo_gold_quality, 
+                        human_gold_quality=human_gold_quality,
+                        qe_name="selfjudge", 
+                        agg="",
+                        src_sentences=None)
+
+
+def eval_monte_carlo_qe(configs, output_dir, pseudo_gold_quality, human_gold_quality):
+    """Load and eval monte-carlo QE scores."""
+    all_seed_results_available = True
+    all_seed_results = []
+    for seed_i in range(1, 11):
+        result_path = f"{output_dir}/inference_{configs['dataname']}/results_{seed_i}.json"
+        if not os.path.isfile(result_path):
+            all_seed_results_available = False
+            break
+        with open(result_path, 'r') as f:
+            all_seed_results.append(json.load(f))
+
+    if not all_seed_results_available:
+        print("Not all seed results are available. Skipping Monte Carlo Sequence Entropy calculation.")
+        return
+
+    softmax_lprobs_seqs = [
+        token_to_sentence_scores(token_level_scores=result_seed_i['log_scores'], aggregate="sum") 
+        for result_seed_i in all_seed_results
+    ]
+    sigmoid_lprobs_seqs = [
+        token_to_sentence_scores(token_level_scores=result_seed_i['confidence_log_scores'], aggregate="sum") 
+        for result_seed_i in all_seed_results
+    ]
+
+    mc_qe_softmax = np.exp(
+        np.asarray(softmax_lprobs_seqs).mean(axis=0)
+    )
+    mc_qe_sigmoid = np.exp(
+        np.asarray(sigmoid_lprobs_seqs).mean(axis=0)
+    )
+
+    log_correlations(dataname=configs['dataname'], 
+                    qe_output=mc_qe_softmax, 
+                    pseudo_gold_quality=pseudo_gold_quality, 
+                    human_gold_quality=human_gold_quality,
+                    qe_name="mc_softmax", 
+                    agg="",
+                    src_sentences=None)
+    
+    log_correlations(dataname=configs['dataname'], 
+                    qe_output=mc_qe_sigmoid, 
+                    pseudo_gold_quality=pseudo_gold_quality, 
+                    human_gold_quality=human_gold_quality,
+                    qe_name="mc_sigmoid", 
+                    agg="",
+                    src_sentences=None)
+
+
+def eval_model_scores_qe(results, configs, pseudo_gold_quality, human_gold_quality):
+    """Eval scores from model inference results."""
+    for k, v in results.items():
+        if 'scores' in k:
+            if 'log' in k:
+                for aggregate in ["sum", "mean"]:
+                    qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
+                    log_correlations(dataname=configs['dataname'], 
+                                     qe_output=qe_output, 
+                                     pseudo_gold_quality=pseudo_gold_quality, 
+                                     human_gold_quality=human_gold_quality,
+                                     qe_name=k, 
+                                     agg=aggregate,
+                                     src_sentences=None)
+            else:
+                for aggregate in ["prod", "mean"]:
+                    qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
+                    log_correlations(dataname=configs['dataname'], 
+                                     qe_output=qe_output, 
+                                     pseudo_gold_quality=pseudo_gold_quality, 
+                                     human_gold_quality=human_gold_quality,
+                                     qe_name=k, 
+                                     agg=aggregate,
+                                     src_sentences=None)
+
+
+def token_scores_to_char_labels(token_scores, mt_text, tokenizer, threshold, invert=False):
+    """
+    Convert token-level scores to character-level binary labels.
+    
+    Args:
+        token_scores: List of scores for each token
+        mt_text: The MT text string
+        tokenizer: The tokenizer used
+        threshold: Score threshold for classifying as error
+        invert: If False (default), scores BELOW threshold are errors (lower = more likely error).
+                If True, scores ABOVE threshold are errors (higher = more likely error, e.g., entropy).
+        
+    Returns:
+        char_labels: List of 0/1 labels for each character (1 = error, 0 = correct)
+    """
+    # Get token offsets for the MT text
+    encoding = tokenizer(mt_text, return_offsets_mapping=True, add_special_tokens=False)
+    offsets = encoding['offset_mapping']
+    
+    # Initialize all characters as correct (0)
+    char_labels = [0] * len(mt_text)
+    
+    # Convert token scores to binary labels and map to characters
+    for token_idx, (start, end) in enumerate(offsets):
+        if token_idx >= len(token_scores):
+            break
+        
+        score = token_scores[token_idx]
+        
+        # Determine if this token is an error based on threshold
+        if invert:
+            is_error = score > threshold  # Higher score = error (e.g., entropy)
+        else:
+            is_error = score < threshold  # Lower score = error (e.g., confidence)
+        
+        if is_error:
+            for char_idx in range(start, end):
+                if char_idx < len(char_labels):
+                    char_labels[char_idx] = 1
+    
+    return char_labels
+
+
+def annotations_to_char_labels(annotations, mt_text_length):
+    """
+    Convert annotation spans to character-level binary labels.
+    
+    Args:
+        annotations: List of annotation dicts with 'start' and 'end' keys
+        mt_text_length: Length of the MT text
+        
+    Returns:
+        char_labels: List of 0/1 labels for each character (1 = error, 0 = correct)
+    """
+    char_labels = [0] * mt_text_length
+    
+    for annotation in annotations:
+        start = annotation['start']
+        end = annotation['end']
+        for char_idx in range(start, min(end, mt_text_length)):
+            char_labels[char_idx] = 1
+    
+    return char_labels
+
+
+def calculate_esa_f1(pred_char_labels_list, gold_char_labels_list):
+    """
+    Calculate precision, recall, and F1 score for error span detection at character level.
+    
+    This follows the WMT ESA evaluation methodology where:
+    - True Positive (TP): Character predicted as error and is actually an error
+    - False Positive (FP): Character predicted as error but is actually correct
+    - False Negative (FN): Character not predicted as error but is actually an error
+    
+    Args:
+        pred_char_labels_list: List of predicted char label lists (one per sentence)
+        gold_char_labels_list: List of gold char label lists (one per sentence)
+        
+    Returns:
+        Dict with precision, recall, f1, and TP/FP/FN counts
+    """
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    
+    for pred_labels, gold_labels in zip(pred_char_labels_list, gold_char_labels_list):
+        # Ensure same length
+        min_len = min(len(pred_labels), len(gold_labels))
+        pred_labels = pred_labels[:min_len]
+        gold_labels = gold_labels[:min_len]
+        
+        for pred, gold in zip(pred_labels, gold_labels):
+            if pred == 1 and gold == 1:
+                total_tp += 1
+            elif pred == 1 and gold == 0:
+                total_fp += 1
+            elif pred == 0 and gold == 1:
+                total_fn += 1
+    
+    # Calculate metrics
+    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'total_tp': total_tp,
+        'total_fp': total_fp,
+        'total_fn': total_fn,
+    }
+
+
+def find_optimal_threshold_for_esa(token_scores_list, mt_texts, gold_char_labels_list, tokenizer, 
+                                    thresholds=None, invert=False):
+    """
+    Find the optimal threshold that maximizes F1 score for error span detection.
+    
+    Args:
+        token_scores_list: List of token score lists (one per sentence)
+        mt_texts: List of MT text strings
+        gold_char_labels_list: Pre-computed list of gold char label lists (one per sentence)
+        tokenizer: The tokenizer used
+        thresholds: List of thresholds to try. If None, use linspace from min to max scores.
+        invert: If False (default), scores BELOW threshold are errors (lower = more likely error).
+                If True, scores ABOVE threshold are errors (higher = more likely error, e.g., entropy).
+        
+    Returns:
+        Tuple of (best_threshold, best_f1, all_results)
+    """
+    # Flatten all scores to determine threshold range
+    all_scores = [s for scores in token_scores_list for s in scores if not np.isnan(s)]
+    if not all_scores:
+        return 0.5, 0.0, {}
+    
+    if thresholds is None:
+        min_score = np.min(all_scores)
+        max_score = np.max(all_scores)
+        thresholds = np.linspace(min_score, max_score, 50)
+    
+    best_f1 = -1
+    best_threshold = thresholds[0]
+    all_results = {}
+    
+    for threshold in thresholds:
+        pred_char_labels_list = [
+            token_scores_to_char_labels(scores, mt_text, tokenizer, threshold, invert)
+            for scores, mt_text in zip(token_scores_list, mt_texts)
+        ]
+        
+        results = calculate_esa_f1(pred_char_labels_list, gold_char_labels_list)
+        all_results[threshold] = results
+        
+        if results['f1'] > best_f1:
+            best_f1 = results['f1']
+            best_threshold = threshold
+    
+    return best_threshold, best_f1, all_results
+
+
+def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir):
+    """
+    Evaluate model scores for error span prediction on MQM/ESA datasets.
+    
+    This function:
+    1. Converts token-level model scores to character-level binary labels
+    2. Calculates precision, recall, and F1 at character level
+    3. Logs metrics to wandb
+    4. Saves threshold search results to JSON for inspection
+    
+    Args:
+        results: Dict containing inference results with token-level scores
+        dataname: Name of the dataset
+        mt_texts: List of MT text strings
+        annotations_list: List of annotation lists (character-level error spans)
+        tokenizer: The tokenizer used for the model
+        output_dir: Output directory for saving results
+    """
+    print(f"Evaluating error span prediction for {dataname}...")
+    
+    # Compute and log gold annotation statistics (independent of predictions)
+    gold_char_labels_list = [
+        annotations_to_char_labels(annotations, len(mt_text))
+        for annotations, mt_text in zip(annotations_list, mt_texts)
+    ]
+    total_chars = sum(len(labels) for labels in gold_char_labels_list)
+    total_error_chars = sum(sum(labels) for labels in gold_char_labels_list)
+    error_rate = total_error_chars / total_chars if total_chars > 0 else 0.0
+    
+    wandb.log({
+        f"{dataname}/esa_total_chars": total_chars,
+        f"{dataname}/esa_total_error_chars": total_error_chars,
+        f"{dataname}/esa_error_rate": error_rate,
+    })
+    print(f"  Gold statistics: error_rate={error_rate:.4f} ({total_error_chars}/{total_chars} chars)")
+    
+    # Evaluate each score type (exclude log scores)
+    score_keys = [k for k in results.keys() if 'scores' in k and 'log' not in k]
+    
+    for score_key in score_keys:
+        token_scores_list = results[score_key]
+        
+        if len(token_scores_list) != len(mt_texts):
+            print(f"  Skipping {score_key}: length mismatch ({len(token_scores_list)} vs {len(mt_texts)})")
+            continue
+        
+        # For entropy_scores, higher value = more uncertain = more likely error
+        # For all other scores, lower value = more likely error
+        invert = (score_key == 'entropy_scores')
+        
+        # Find optimal threshold and calculate metrics
+        best_threshold, best_f1, all_results = find_optimal_threshold_for_esa(
+            token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert
+        )
+        
+        # Save threshold search results to JSON for later inspection
+        # Convert float keys to strings for JSON compatibility
+        all_results_serializable = {str(k): v for k, v in all_results.items()}
+        esa_results_path = f"{output_dir}/inference_{dataname}/esa_threshold_search_{score_key}.json"
+        with open(esa_results_path, 'w') as f:
+            json.dump(all_results_serializable, f, indent=2)
+        print(f"  Saved threshold search results to {esa_results_path}")
+        
+        # Get results at optimal threshold
+        best_results = all_results[best_threshold]
+        
+        # Log to wandb 
+        log_dict = {
+            f"{dataname}_{score_key}/esa_f1": best_results['f1'],
+            f"{dataname}_{score_key}/esa_precision": best_results['precision'],
+            f"{dataname}_{score_key}/esa_recall": best_results['recall'],
+            f"{dataname}_{score_key}/esa_optimal_threshold": best_threshold,
+        }
+        wandb.log(log_dict)
+        
+        print(f"  {score_key}:")
+        print(f"    F1: {best_results['f1']:.4f} (threshold: {best_threshold:.4f})")
+        print(f"    Precision: {best_results['precision']:.4f}, Recall: {best_results['recall']:.4f}")
+
+
 def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg="", src_sentences=None):
     if len(qe_output) == 0:
         return
@@ -486,17 +894,18 @@ def main():
     )
 
     src = list(test_dataset['src'])
-    ref = list(test_dataset['ref'])
+    ref = list(test_dataset['ref']) if 'ref' in test_dataset.column_names else None
 
     write_text_file(src, f"{output_dir}/inference_{configs['dataname']}/src.txt")
-    write_text_file(ref, f"{output_dir}/inference_{configs['dataname']}/ref.txt")
+    if ref is not None:
+        write_text_file(ref, f"{output_dir}/inference_{configs['dataname']}/ref.txt")
 
     # Load inference results
     with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'r') as f:
         results = json.load(f)
 
     human_gold_quality = None
-    if configs.get('force_decoding'):
+    if configs.get('force_decoding') and os.path.isfile(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}"):
         # This is the setting where we do forced decoding on translations where human quality scores are available
         human_gold_quality = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}")
         human_gold_quality = [float(x) for x in human_gold_quality]
@@ -507,153 +916,32 @@ def main():
 
     if ("wmt" in configs['dataname']) or ("ParaCrawl" in configs['dataname']) or ("biomqm" in configs['dataname']):
         # Specific to translation test sets (using COMET models as pseudo ground-truth and supervised baseline)
-        # Calculate COMET ref-based gold quality
-        cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_ref_based']}.txt"
-        if os.path.isfile(cache_path) and args.use_comet_cache:
-            print("Load pre-computed ref-based COMET ...")
-            pseudo_gold_quality = load_text_file(cache_path)
-            pseudo_gold_quality = [float(x) for x in pseudo_gold_quality]
-        else:
-            print("Running ref-based COMET  ...")
-            comet_ref_based = load_comet_model(model_name=configs['comet_ref_based'])
-            pseudo_gold_quality = comet_ref_based.predict(
-                format_for_comet(src, results['pred_txt'], ref), batch_size=4, gpus=1
-            ).scores
-            write_text_file(pseudo_gold_quality, cache_path)
-
-        # Log the system-level quality, also with some traditional metrics
-        wandb.log({
-            f"{configs['dataname']}_{configs['comet_ref_based']}": np.mean(pseudo_gold_quality),
-            f"{configs['dataname']}_BLEU": BLEU().corpus_score(results['pred_txt'], [ref]).score,
-            f"{configs['dataname']}_chrF2": CHRF().corpus_score(results['pred_txt'], [ref]).score,
-        })
-
-        # Calculate and eval supervised baseline
-        if configs["comet_qe_baseline"] != "None":
-            cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs['comet_qe_baseline']}.txt"
-            if os.path.isfile(cache_path) and args.use_comet_cache:
-                print("Loading COMET QE baseline ...")
-                qe_output = load_text_file(cache_path)
-                qe_output = [float(x) for x in qe_output]
-            else:
-                print("Running COMET QE baseline ...")
-                comet_qe_sys = load_comet_model(model_name=configs['comet_qe_baseline'])
-                qe_output = comet_qe_sys.predict(
-                    format_for_comet(src, results['pred_txt']), batch_size=4, gpus=1
-                ).scores
-                write_text_file(qe_output, cache_path)
-
-        log_correlations(dataname=configs['dataname'], 
-                        qe_output=qe_output, 
-                        pseudo_gold_quality=pseudo_gold_quality, 
-                        human_gold_quality=human_gold_quality,
-                        qe_name=configs['comet_qe_baseline'],
-                        src_sentences=None)
+        pseudo_gold_quality = calculate_comet_ref_gold(
+            src, results['pred_txt'], ref, configs, output_dir, args.use_comet_cache
+        )
+        calculate_comet_qe_baseline(
+            src, results['pred_txt'], configs, output_dir, args.use_comet_cache,
+            pseudo_gold_quality, human_gold_quality
+        )
     else:
         # Not MT dataset, use LLM-as-a-Judge as pseudo ground truth
-        # Load ref-based gold quality
-        cache_path = f"{output_dir}/inference_{configs['dataname']}/qwen25_72B.txt"
-        if os.path.isfile(cache_path):
-            print(f"Load pre-computed LLM-as-a-judge score from {cache_path} ...")
-            pseudo_gold_quality = load_text_file(cache_path)
-            pseudo_gold_quality = [float(x) if x != "None" else np.nan for x in pseudo_gold_quality]
-
-            # Log the system-level quality
-            wandb.log({
-                f"{configs['dataname']}_qwen25_72B": np.mean(pseudo_gold_quality)
-            })
-        elif not configs.get('force_decoding'):
-            print("Please compute LLM-as-a-Judge score as ground truth first!")
-            exit(0)
-        else:
-            pseudo_gold_quality = None
-
+        pseudo_gold_quality = calculate_llm_judge_gold(configs, output_dir)
 
     # Load and eval self-judge QE
-    model_name = ''.join(c for c in configs['model_id'] if c.isalnum()).lower()
-    cache_path = f"{output_dir}/inference_{configs['dataname']}/{model_name}.txt"
-    if os.path.isfile(cache_path):
-        print(f"Load pre-computed LLM Self Judge score from {cache_path} ...")
-        self_judge_qe_score = load_text_file(cache_path)
-        self_judge_qe_score = [float(x) if x != "None" else np.nan for x in self_judge_qe_score]
-        log_correlations(dataname=configs['dataname'], 
-                        qe_output=self_judge_qe_score, 
-                        pseudo_gold_quality=pseudo_gold_quality, 
-                        human_gold_quality=human_gold_quality,
-                        qe_name="selfjudge", 
-                        agg="",
-                        src_sentences=None)
+    eval_self_judge_qe(configs, output_dir, pseudo_gold_quality, human_gold_quality)
         
     # Load and eval monte-carlo QE
-    all_seed_results_available = True
-    all_seed_results = []
-    for seed_i in range(1, 11):
-        result_path = f"{output_dir}/inference_{configs['dataname']}/results_{seed_i}.json"
-        if not os.path.isfile(result_path):
-            all_seed_results_available = False
-            break
-        # Load inference results
-        with open(result_path, 'r') as f:
-            all_seed_results.append(json.load(f))
-
-    if not all_seed_results_available:
-        print("Not all seed results are available. Skipping Monte Carlo Sequence Entropy calculation.")
-    else:
-        softmax_lprobs_seqs = [
-            token_to_sentence_scores(token_level_scores=result_seed_i['log_scores'], aggregate="sum") 
-            for result_seed_i in all_seed_results
-        ]
-        sigmoid_lprobs_seqs = [
-            token_to_sentence_scores(token_level_scores=result_seed_i['confidence_log_scores'], aggregate="sum") 
-            for result_seed_i in all_seed_results
-        ]
-
-        mc_qe_softmax = np.exp(
-            np.asarray(softmax_lprobs_seqs).mean(axis=0)
-        )
-        mc_qe_sigmoid = np.exp(
-            np.asarray(sigmoid_lprobs_seqs).mean(axis=0)
-        )
-
-        log_correlations(dataname=configs['dataname'], 
-                        qe_output=mc_qe_softmax, 
-                        pseudo_gold_quality=pseudo_gold_quality, 
-                        human_gold_quality=human_gold_quality,
-                        qe_name="mc_softmax", 
-                        agg="",
-                        src_sentences=None)
-        
-        log_correlations(dataname=configs['dataname'], 
-                        qe_output=mc_qe_sigmoid, 
-                        pseudo_gold_quality=pseudo_gold_quality, 
-                        human_gold_quality=human_gold_quality,
-                        qe_name="mc_sigmoid", 
-                        agg="",
-                        src_sentences=None)
+    eval_monte_carlo_qe(configs, output_dir, pseudo_gold_quality, human_gold_quality)
 
     # Eval scores from model inference
-    for k, v in results.items():
-        if 'scores' in k:
-            if 'log' in k:
-                for aggregate in ["sum", "mean"]:
-                    qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
-                    log_correlations(dataname=configs['dataname'], 
-                                     qe_output=qe_output, 
-                                     pseudo_gold_quality=pseudo_gold_quality, 
-                                     human_gold_quality=human_gold_quality,
-                                     qe_name=k, 
-                                     agg=aggregate,
-                                     src_sentences=None)
-            else:
-                for aggregate in ["prod", "mean"]:
-                    qe_output = token_to_sentence_scores(token_level_scores=v, aggregate=aggregate)
-                    log_correlations(dataname=configs['dataname'], 
-                                     qe_output=qe_output, 
-                                     pseudo_gold_quality=pseudo_gold_quality, 
-                                     human_gold_quality=human_gold_quality,
-                                     qe_name=k, 
-                                     agg=aggregate,
-                                     src_sentences=None)
+    eval_model_scores_qe(results, configs, pseudo_gold_quality, human_gold_quality)
+    
+    # Eval error span prediction for MQM/ESA datasets
+    if 'annotations' in test_dataset.column_names:
+        mt_texts = list(test_dataset['mt'])
+        annotations_list = list(test_dataset['annotations'])
+        tokenizer = AutoTokenizer.from_pretrained(configs['model_id'])
+        eval_model_scores_error_spans(results, configs['dataname'], mt_texts, annotations_list, tokenizer, output_dir)
     
 
 if __name__ == "__main__":

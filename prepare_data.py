@@ -190,7 +190,11 @@ def format_and_tokenize_example_for_inference(example, dataname, src_lang, tgt_l
     )
     return tokenized_input
 
-def format_raw_strings(example, dataname):
+def format_raw_data(example, dataname):
+    """
+    Return raw text (untokenized)
+    In the case of MQM/ESA: return character-level span instead of token level labels
+    """
     if "google/wmt24pp" in dataname:
         formatted_example = {
             'src': example['source'],
@@ -207,6 +211,12 @@ def format_raw_strings(example, dataname):
         formatted_example = {
             'src': example['question'],
             'ref': example['answer']
+        }
+    elif dataname in ["RicardoRei/wmt-mqm-error-spans", "wmt24_esa"]:
+        formatted_example = {
+            'src': example['src'],
+            'mt': example['mt'],
+            'annotations': example['annotations'],
         }
     else:
         formatted_example = {
@@ -225,6 +235,49 @@ def has_no_none_values(example):
 
 
 # ==================== MQM Dataset Preprocessing Functions ====================
+
+def load_wmt24_esa_dataset(jsonl_path, lang_pair=None):
+    """
+    Load WMT24 ESA dataset from a JSONL file and convert to MQM format.
+    
+    Args:
+        jsonl_path: Path to the JSONL file
+        lang_pair: Optional language pair filter (e.g., "en-cs"). If None, load all.
+        
+    Returns:
+        HuggingFace Dataset with fields: src, mt, lp, annotations
+    """
+    data = []
+    with open(jsonl_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            item = json.loads(line.strip())
+            
+            # Filter by language pair if specified
+            if lang_pair is not None and item['langs'] != lang_pair:
+                continue
+            
+            # Convert esa_spans to annotations format
+            # esa_spans uses start_i/end_i (character indices), we convert to start/end
+            annotations = []
+            for span in item.get('esa_spans', []):
+                if span['start_i'] == 'missing' or span['end_i'] == 'missing':
+                    continue
+                annotations.append({
+                    'start': span['start_i'],
+                    'end': span['end_i'] + 1,  # Make end exclusive to match MQM format
+                    'severity': span.get('severity', ''),
+                    'text': item['tgt'][span['start_i']:span['end_i'] + 1] if span['start_i'] < len(item['tgt']) else ''
+                })
+            
+            data.append({
+                'src': item['src'],
+                'mt': item['tgt'],
+                'lp': item['langs'],
+                'annotations': annotations,
+            })
+    
+    return Dataset.from_list(data)
+
 
 def mqm_deduplicate_dataset(dataset, mode):
     """
@@ -393,9 +446,32 @@ def build_datasets(
         #          "src_mt_annotations" (unique src+mt+annotations)
         dataset = mqm_deduplicate_dataset(dataset, mode=mqm_deduplicate)
         
-        # Source-aware train/dev split
-        # Ensure samples with the same source don't appear in both train and dev sets
-        dataset = mqm_source_aware_split(dataset, split=split, dev_size=5000)
+        if split is not None:
+            # Source-aware train/dev split
+            # Ensure samples with the same source don't appear in both train and dev sets
+            dataset = mqm_source_aware_split(dataset, split=split, dev_size=5000)
+    elif dataname == "wmt24_esa":
+        # ==================== WMT24 ESA Dataset ====================
+        # Local JSONL dataset with ESA (Error Span Annotation) format.
+        # Converted to MQM format for token-level confidence training.
+        jsonl_path = f"{os.environ.get('ROOT_DIR')}/{src_path}"
+        
+        # Parse language pair from tgt_lang if provided (reusing tgt_lang param for lp)
+        lang_pair = tgt_lang  # e.g., "en-cs"
+        
+        dataset = load_wmt24_esa_dataset(jsonl_path, lang_pair=lang_pair)
+        
+        # Filter out samples without annotations if requested
+        if mqm_filter_no_annotations:
+            dataset = dataset.filter(lambda x: x.get('annotations') and len(x['annotations']) > 0)
+        
+        # Apply deduplication if requested
+        dataset = mqm_deduplicate_dataset(dataset, mode=mqm_deduplicate)
+        
+        if split is not None:
+            # Source-aware train/dev split
+            dataset = mqm_source_aware_split(dataset, split=split, dev_size=5000)
+
     elif dataname in ["allenai/tulu-3-sft-olmo-2-mixture-0225", "allenai/tulu-3-sft-olmo-2-mixture"]:
         dataset = load_dataset(dataname)
         dataset = dataset['train']
@@ -436,10 +512,10 @@ def build_datasets(
     
     if not raw_text_string:
         # Use special tokenization for MQM data that creates token-level labels
-        if dataname == "RicardoRei/wmt-mqm-error-spans":
+        if dataname in ["RicardoRei/wmt-mqm-error-spans", "wmt24_esa"]:
             dataset = dataset.map(
                 lambda x: format_and_tokenize_mqm_example_for_teacher_forcing(x, tokenizer, max_length),
-                load_from_cache_file=True,
+                load_from_cache_file=False,
                 num_proc=100
             )
             # Set format for PyTorch - include mqm_token_labels for MQM training mode
@@ -450,7 +526,7 @@ def build_datasets(
                     format_and_tokenize_example_for_teacher_forcing(x, dataname, src_lang, tgt_lang, tokenizer, max_length) 
                     if teacher_forcing
                     else format_and_tokenize_example_for_inference(x, dataname, src_lang, tgt_lang, tokenizer, max_length),
-                load_from_cache_file=True,
+                load_from_cache_file=False,
                 num_proc=100
             )
 
@@ -458,8 +534,8 @@ def build_datasets(
             dataset.set_format(type="torch", columns=["input_ids", "attention_mask"] + (["labels"] if teacher_forcing else []))
     else:
         dataset = dataset.map(
-            lambda x: format_raw_strings(x, dataname),
-            load_from_cache_file=True,
+            lambda x: format_raw_data(x, dataname),
+            load_from_cache_file=False,
             num_proc=100,
             remove_columns=dataset.column_names
         )
@@ -627,6 +703,21 @@ def create_token_labels_from_mqm_annotations(mt_text, annotations, tokenizer):
     return token_labels
 
 
+def get_lang_map():
+    return {
+        'en': 'English',
+        'de': 'German',
+        'zh': 'Chinese',
+        'ru': 'Russian',
+        'is': 'Icelandic',
+        'hi': 'Hindi',
+        'ja': 'Japanese',
+        'es': 'Spanish',
+        'uk': 'Ukrainian',
+        'cs': 'Czech',
+    }
+
+
 def format_and_tokenize_mqm_example_for_teacher_forcing(example, tokenizer, max_length=1024):
     """
     Format and tokenize an MQM example for teacher forcing training.
@@ -641,13 +732,11 @@ def format_and_tokenize_mqm_example_for_teacher_forcing(example, tokenizer, max_
         Dict with input_ids, attention_mask, labels, and mqm_token_labels
     """
     # Parse language pair (e.g., "en-de" -> "English", "German")
-    lp = example.get('lp', 'en-de')
+    lp = example['lp']
     src_code, tgt_code = lp.split('-')
-    lang_map = {
-        'en': 'English', 'de': 'German', 'zh': 'Chinese', 'ru': 'Russian', 
-    }
-    src_lang = lang_map.get(src_code, src_code)
-    tgt_lang = lang_map.get(tgt_code, tgt_code)
+    lang_map = get_lang_map()
+    src_lang = lang_map[src_code]
+    tgt_lang = lang_map[tgt_code]
     
     # Create chat messages using MT output (not reference) as target
     # This is because we want to train the model to recognize errors in MT output

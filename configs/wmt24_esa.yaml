@@ -1,0 +1,6 @@
+dataname: "wmt24_esa"
+test_src_path: "data/wmt24_esa_original.jsonl"
+tgt_lang: "en-es"  # Language pair filter (optional, omit to load all)
+mqm_deduplicate: "None"  # No deduplication for testing
+mqm_filter_no_annotations: false  # No filter for testing
+max_length: 2048
