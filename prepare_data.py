@@ -212,7 +212,7 @@ def format_raw_data(example, dataname):
             'src': example['question'],
             'ref': example['answer']
         }
-    elif dataname in ["RicardoRei/wmt-mqm-error-spans", "wmt24_esa"]:
+    elif dataname == "RicardoRei/wmt-mqm-error-spans" or dataname.startswith("wmt24_esa"):
         formatted_example = {
             'src': example['src'],
             'mt': example['mt'],
@@ -450,7 +450,7 @@ def build_datasets(
             # Source-aware train/dev split
             # Ensure samples with the same source don't appear in both train and dev sets
             dataset = mqm_source_aware_split(dataset, split=split, dev_size=5000)
-    elif dataname == "wmt24_esa":
+    elif dataname.startswith("wmt24_esa"):
         # ==================== WMT24 ESA Dataset ====================
         # Local JSONL dataset with ESA (Error Span Annotation) format.
         # Converted to MQM format for token-level confidence training.
@@ -512,7 +512,7 @@ def build_datasets(
     
     if not raw_text_string:
         # Use special tokenization for MQM data that creates token-level labels
-        if dataname in ["RicardoRei/wmt-mqm-error-spans", "wmt24_esa"]:
+        if dataname == "RicardoRei/wmt-mqm-error-spans" or dataname.startswith("wmt24_esa"):
             dataset = dataset.map(
                 lambda x: format_and_tokenize_mqm_example_for_teacher_forcing(x, tokenizer, max_length),
                 load_from_cache_file=False,

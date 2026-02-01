@@ -705,6 +705,7 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
     2. Calculates precision, recall, and F1 at character level
     3. Logs metrics to wandb
     4. Saves threshold search results to JSON for inspection
+    5. Saves character-level gold and predicted labels to JSON
     
     Args:
         results: Dict containing inference results with token-level scores
@@ -732,6 +733,11 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
     })
     print(f"  Gold statistics: error_rate={error_rate:.4f} ({total_error_chars}/{total_chars} chars)")
     
+    # Initialize output dict for character-level labels
+    esa_output_labels = {
+        'gold_label_character_level': gold_char_labels_list,
+    }
+    
     # Evaluate each score type (exclude log scores)
     score_keys = [k for k in results.keys() if 'scores' in k and 'log' not in k]
     
@@ -748,7 +754,7 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         
         # Find optimal threshold and calculate metrics
         best_threshold, best_f1, all_results = find_optimal_threshold_for_esa(
-            token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert
+            token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert, thresholds=[0.5]
         )
         
         # Save threshold search results to JSON for later inspection
@@ -758,6 +764,13 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         with open(esa_results_path, 'w') as f:
             json.dump(all_results_serializable, f, indent=2)
         print(f"  Saved threshold search results to {esa_results_path}")
+        
+        # Get predicted character-level labels at optimal threshold
+        pred_char_labels_list = [
+            token_scores_to_char_labels(scores, mt_text, tokenizer, best_threshold, invert)
+            for scores, mt_text in zip(token_scores_list, mt_texts)
+        ]
+        esa_output_labels[f'{score_key}_label_character_level'] = pred_char_labels_list
         
         # Get results at optimal threshold
         best_results = all_results[best_threshold]
@@ -774,6 +787,12 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         print(f"  {score_key}:")
         print(f"    F1: {best_results['f1']:.4f} (threshold: {best_threshold:.4f})")
         print(f"    Precision: {best_results['precision']:.4f}, Recall: {best_results['recall']:.4f}")
+    
+    # Save character-level labels to JSON
+    esa_labels_path = f"{output_dir}/inference_{dataname}/esa_output_labels.json"
+    with open(esa_labels_path, 'w') as f:
+        json.dump(esa_output_labels, f)
+    print(f"  Saved character-level labels to {esa_labels_path}")
 
 
 def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg="", src_sentences=None):
@@ -895,10 +914,13 @@ def main():
 
     src = list(test_dataset['src'])
     ref = list(test_dataset['ref']) if 'ref' in test_dataset.column_names else None
+    mt = list(test_dataset['mt']) if 'mt' in test_dataset.column_names else None
 
     write_text_file(src, f"{output_dir}/inference_{configs['dataname']}/src.txt")
     if ref is not None:
         write_text_file(ref, f"{output_dir}/inference_{configs['dataname']}/ref.txt")
+    if mt is not None:
+        write_text_file(mt, f"{output_dir}/inference_{configs['dataname']}/mt.txt")
 
     # Load inference results
     with open(f"{output_dir}/inference_{configs['dataname']}/results.json", 'r') as f:
@@ -938,10 +960,9 @@ def main():
     
     # Eval error span prediction for MQM/ESA datasets
     if 'annotations' in test_dataset.column_names:
-        mt_texts = list(test_dataset['mt'])
         annotations_list = list(test_dataset['annotations'])
         tokenizer = AutoTokenizer.from_pretrained(configs['model_id'])
-        eval_model_scores_error_spans(results, configs['dataname'], mt_texts, annotations_list, tokenizer, output_dir)
+        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir)
     
 
 if __name__ == "__main__":
