@@ -115,7 +115,10 @@ def main():
             tgt_path=configs.get('test_pregenerated_tgt_path'),
             src_lang=configs.get('src_lang'),
             tgt_lang=configs.get('tgt_lang'),
-            teacher_forcing=True
+            teacher_forcing=True,
+            split=configs.get('split'),
+            mqm_deduplicate=configs.get('mqm_deduplicate'),
+            mqm_filter_no_annotations=configs.get('mqm_filter_no_annotations', False)
         )
     else:
         # Left-side pad the input
@@ -128,7 +131,10 @@ def main():
             tgt_path=configs.get('test_tgt_path'),
             src_lang=configs.get('src_lang'),
             tgt_lang=configs.get('tgt_lang'),
-            teacher_forcing=False
+            teacher_forcing=False,
+            split=configs.get('split'),
+            mqm_deduplicate=configs.get('mqm_deduplicate'),
+            mqm_filter_no_annotations=configs.get('mqm_filter_no_annotations', False)
         )
 
     test_dataloader = DataLoader(test_dataset, batch_size=configs['per_device_test_batch_size'], shuffle=False)

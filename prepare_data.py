@@ -408,7 +408,7 @@ def mqm_source_aware_split(dataset, split, dev_size=5000):
 def build_datasets(
         dataname, tokenizer=None, max_length=1024, teacher_forcing=True, # Args used by all datasets
         src_path=None, tgt_path=None, src_lang=None, tgt_lang=None, # Args used by self-loaded data
-        split=None, # Args used by huggingface dataset
+        split=None, # Args used by huggingface dataset. Use the full dataset if set to None
         raw_text_string=False,  # Return raw text strings with (src, ref) entries, instead of formatted and tokenized input samples
         mqm_deduplicate=None,  # MQM deduplication mode: None, "src", "src_mt", "src_mt_annotations"
         mqm_filter_no_annotations=False,  # If True, filter out MQM samples without error annotations

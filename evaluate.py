@@ -723,7 +723,7 @@ def find_optimal_threshold_for_esa(token_scores_list, mt_texts, gold_char_labels
     return best_threshold, best_f1, all_results
 
 
-def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir):
+def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir, split=None):
     """
     Evaluate model scores for error span prediction on MQM/ESA datasets.
     
@@ -741,6 +741,7 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         annotations_list: List of annotation lists (character-level error spans)
         tokenizer: The tokenizer used for the model
         output_dir: Output directory for saving results
+        split: The dataset split, determines whether to find or retrieve threshold (only calculate optimal threshold on 'dev')
     """
     print(f"Evaluating error span prediction for {dataname}...")
     
@@ -799,17 +800,30 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         # For all other scores, lower value = more likely error
         invert = (score_key == 'entropy_scores')
         
-        # Find optimal threshold and calculate character-level metrics
-        best_threshold, best_f1_char, all_results = find_optimal_threshold_for_esa(
-            token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert
-        )
-        
-        # Save threshold search results to JSON for later inspection
-        all_results_serializable = {str(k): v for k, v in all_results.items()}
-        esa_results_path = f"{output_dir}/inference_{dataname}/esa_threshold_search_{score_key}.json"
-        with open(esa_results_path, 'w') as f:
-            json.dump(all_results_serializable, f, indent=2)
-        print(f"  Saved threshold search results to {esa_results_path}")
+        # Determine if we should find or retrieve the optimal threshold
+        if split == 'dev':
+            # Find optimal threshold and calculate character-level metrics
+            best_threshold, best_f1_char, all_results = find_optimal_threshold_for_esa(
+                token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert
+            )
+            
+            # Save threshold search results to JSON for later inspection
+            all_results_serializable = {str(k): v for k, v in all_results.items()}
+            esa_results_path = f"{output_dir}/inference_{dataname}/esa_threshold_search_{score_key}.json"
+            with open(esa_results_path, 'w') as f:
+                json.dump(all_results_serializable, f, indent=2)
+            print(f"  Saved threshold search results to {esa_results_path}")
+            
+            # Log the optimal threshold to wandb
+            wandb.log({f"{score_key}/esa_optimal_threshold": best_threshold})
+        else:
+            # Retrieve optimal threshold from wandb
+            best_threshold = wandb.run.summary.get(f"{score_key}/esa_optimal_threshold")
+            if best_threshold is None:
+                print(f"  Warning: Could not retrieve optimal threshold for {score_key} from wandb. Set default threshold = 0.5")
+                best_threshold = 0.5
+            else:
+                print(f"  Retrieved optimal threshold for {score_key}: {best_threshold}")
         
         # Get predicted character-level labels at optimal threshold
         pred_char_labels_list = [
@@ -826,7 +840,7 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         esa_token_output_labels[f'{score_key}_label_token_level'] = pred_token_labels_list
         
         # Get character-level results at optimal threshold
-        char_results = all_results[best_threshold]
+        char_results = calculate_esa_f1(pred_char_labels_list, gold_char_labels_list)
         
         # Calculate token-level metrics
         token_results = calculate_esa_f1(pred_token_labels_list, gold_token_labels_list)
@@ -978,7 +992,10 @@ def main():
         tgt_path=configs.get('test_tgt_path'),
         src_lang=configs.get('src_lang'),
         tgt_lang=configs.get('tgt_lang'),
-        raw_text_string=True
+        split=configs.get('split'),
+        raw_text_string=True,
+        mqm_deduplicate=configs.get('mqm_deduplicate'),
+        mqm_filter_no_annotations=configs.get('mqm_filter_no_annotations', False)
     )
 
     src = list(test_dataset['src'])
@@ -1031,7 +1048,7 @@ def main():
     if 'annotations' in test_dataset.column_names:
         annotations_list = list(test_dataset['annotations'])
         tokenizer = AutoTokenizer.from_pretrained(configs['model_id'])
-        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir)
+        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir, configs.get('split'))
     
 
 if __name__ == "__main__":
