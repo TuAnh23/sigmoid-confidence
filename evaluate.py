@@ -649,6 +649,33 @@ def calculate_esa_f1(pred_char_labels_list, gold_char_labels_list):
     }
 
 
+def char_labels_to_token_labels(char_labels, text, tokenizer):
+    """
+    Convert character-level labels to token-level labels.
+    Uses the get_char_to_token_mapping concept: a token is marked as error if any character it contains is an error.
+    
+    Args:
+        char_labels: List of 0/1 labels for each character (1 = error, 0 = correct)
+        text: The text string
+        tokenizer: The tokenizer used
+        
+    Returns:
+        token_labels: List of 0/1 labels for each token (1 = error, 0 = correct)
+    """
+    # Get token offsets for the text
+    encoding = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+    offsets = encoding['offset_mapping']
+    
+    # Create token-level labels: a token is an error if any of its characters is an error
+    token_labels = []
+    for start, end in offsets:
+        # Check if any character in this token span is marked as error
+        is_token_error = any(char_labels[char_idx] == 1 for char_idx in range(start, end) if char_idx < len(char_labels))
+        token_labels.append(1 if is_token_error else 0)
+    
+    return token_labels
+
+
 def find_optimal_threshold_for_esa(token_scores_list, mt_texts, gold_char_labels_list, tokenizer, 
                                     thresholds=None, invert=False):
     """
@@ -674,7 +701,7 @@ def find_optimal_threshold_for_esa(token_scores_list, mt_texts, gold_char_labels
     if thresholds is None:
         min_score = np.min(all_scores)
         max_score = np.max(all_scores)
-        thresholds = np.linspace(min_score, max_score, 50)
+        thresholds = np.linspace(min_score, max_score, 20)
     
     best_f1 = -1
     best_threshold = thresholds[0]
@@ -702,10 +729,10 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
     
     This function:
     1. Converts token-level model scores to character-level binary labels
-    2. Calculates precision, recall, and F1 at character level
+    2. Calculates precision, recall, and F1 at both character and token levels
     3. Logs metrics to wandb
     4. Saves threshold search results to JSON for inspection
-    5. Saves character-level gold and predicted labels to JSON
+    5. Saves character-level and token-level gold and predicted labels to JSON
     
     Args:
         results: Dict containing inference results with token-level scores
@@ -722,20 +749,40 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         annotations_to_char_labels(annotations, len(mt_text))
         for annotations, mt_text in zip(annotations_list, mt_texts)
     ]
+    
+    # Convert to token-level labels
+    gold_token_labels_list = [
+        char_labels_to_token_labels(char_labels, mt_text, tokenizer)
+        for char_labels, mt_text in zip(gold_char_labels_list, mt_texts)
+    ]
+    
+    # Character-level statistics
     total_chars = sum(len(labels) for labels in gold_char_labels_list)
     total_error_chars = sum(sum(labels) for labels in gold_char_labels_list)
-    error_rate = total_error_chars / total_chars if total_chars > 0 else 0.0
+    error_rate_char = total_error_chars / total_chars if total_chars > 0 else 0.0
+    
+    # Token-level statistics
+    total_tokens = sum(len(labels) for labels in gold_token_labels_list)
+    total_error_tokens = sum(sum(labels) for labels in gold_token_labels_list)
+    error_rate_token = total_error_tokens / total_tokens if total_tokens > 0 else 0.0
     
     wandb.log({
         f"{dataname}/esa_total_chars": total_chars,
         f"{dataname}/esa_total_error_chars": total_error_chars,
-        f"{dataname}/esa_error_rate": error_rate,
+        f"{dataname}/esa_error_rate_char": error_rate_char,
+        f"{dataname}/esa_total_tokens": total_tokens,
+        f"{dataname}/esa_total_error_tokens": total_error_tokens,
+        f"{dataname}/esa_error_rate_token": error_rate_token,
     })
-    print(f"  Gold statistics: error_rate={error_rate:.4f} ({total_error_chars}/{total_chars} chars)")
+    print(f"  Gold statistics (character level): error_rate={error_rate_char:.4f} ({total_error_chars}/{total_chars} chars)")
+    print(f"  Gold statistics (token level): error_rate={error_rate_token:.4f} ({total_error_tokens}/{total_tokens} tokens)")
     
-    # Initialize output dict for character-level labels
+    # Initialize output dicts for character-level and token-level labels
     esa_output_labels = {
         'gold_label_character_level': gold_char_labels_list,
+    }
+    esa_token_output_labels = {
+        'gold_label_token_level': gold_token_labels_list,
     }
     
     # Evaluate each score type (exclude log scores)
@@ -752,13 +799,12 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         # For all other scores, lower value = more likely error
         invert = (score_key == 'entropy_scores')
         
-        # Find optimal threshold and calculate metrics
-        best_threshold, best_f1, all_results = find_optimal_threshold_for_esa(
-            token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert, thresholds=[0.5]
+        # Find optimal threshold and calculate character-level metrics
+        best_threshold, best_f1_char, all_results = find_optimal_threshold_for_esa(
+            token_scores_list, mt_texts, gold_char_labels_list, tokenizer, invert=invert
         )
         
         # Save threshold search results to JSON for later inspection
-        # Convert float keys to strings for JSON compatibility
         all_results_serializable = {str(k): v for k, v in all_results.items()}
         esa_results_path = f"{output_dir}/inference_{dataname}/esa_threshold_search_{score_key}.json"
         with open(esa_results_path, 'w') as f:
@@ -772,27 +818,50 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         ]
         esa_output_labels[f'{score_key}_label_character_level'] = pred_char_labels_list
         
-        # Get results at optimal threshold
-        best_results = all_results[best_threshold]
+        # Convert to token-level labels
+        pred_token_labels_list = [
+            char_labels_to_token_labels(char_labels, mt_text, tokenizer)
+            for char_labels, mt_text in zip(pred_char_labels_list, mt_texts)
+        ]
+        esa_token_output_labels[f'{score_key}_label_token_level'] = pred_token_labels_list
         
-        # Log to wandb 
+        # Get character-level results at optimal threshold
+        char_results = all_results[best_threshold]
+        
+        # Calculate token-level metrics
+        token_results = calculate_esa_f1(pred_token_labels_list, gold_token_labels_list)
+        
+        # Log both character-level and token-level metrics to wandb
         log_dict = {
-            f"{dataname}_{score_key}/esa_f1": best_results['f1'],
-            f"{dataname}_{score_key}/esa_precision": best_results['precision'],
-            f"{dataname}_{score_key}/esa_recall": best_results['recall'],
+            # Character-level
+            f"{dataname}_{score_key}/esa_f1_char": char_results['f1'],
+            f"{dataname}_{score_key}/esa_precision_char": char_results['precision'],
+            f"{dataname}_{score_key}/esa_recall_char": char_results['recall'],
             f"{dataname}_{score_key}/esa_optimal_threshold": best_threshold,
+            # Token-level
+            f"{dataname}_{score_key}/esa_f1_token": token_results['f1'],
+            f"{dataname}_{score_key}/esa_precision_token": token_results['precision'],
+            f"{dataname}_{score_key}/esa_recall_token": token_results['recall'],
         }
         wandb.log(log_dict)
         
         print(f"  {score_key}:")
-        print(f"    F1: {best_results['f1']:.4f} (threshold: {best_threshold:.4f})")
-        print(f"    Precision: {best_results['precision']:.4f}, Recall: {best_results['recall']:.4f}")
+        print(f"    Character-level F1: {char_results['f1']:.4f} (threshold: {best_threshold:.4f})")
+        print(f"    Character-level Precision: {char_results['precision']:.4f}, Recall: {char_results['recall']:.4f}")
+        print(f"    Token-level F1: {token_results['f1']:.4f}")
+        print(f"    Token-level Precision: {token_results['precision']:.4f}, Recall: {token_results['recall']:.4f}")
     
     # Save character-level labels to JSON
     esa_labels_path = f"{output_dir}/inference_{dataname}/esa_output_labels.json"
     with open(esa_labels_path, 'w') as f:
         json.dump(esa_output_labels, f)
     print(f"  Saved character-level labels to {esa_labels_path}")
+    
+    # Save token-level labels to JSON
+    esa_token_labels_path = f"{output_dir}/inference_{dataname}/esa_token_output_labels.json"
+    with open(esa_token_labels_path, 'w') as f:
+        json.dump(esa_token_output_labels, f)
+    print(f"  Saved token-level labels to {esa_token_labels_path}")
 
 
 def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_quality, qe_name, agg="", src_sentences=None):
