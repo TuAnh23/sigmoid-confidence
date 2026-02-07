@@ -723,7 +723,7 @@ def find_optimal_threshold_for_esa(token_scores_list, mt_texts, gold_char_labels
     return best_threshold, best_f1, all_results
 
 
-def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir, split=None):
+def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir, split=None, skip_omissions=False):
     """
     Evaluate model scores for error span prediction on MQM/ESA datasets.
     
@@ -742,8 +742,26 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         tokenizer: The tokenizer used for the model
         output_dir: Output directory for saving results
         split: The dataset split, determines whether to find or retrieve threshold (only calculate optimal threshold on 'dev')
+        skip_omissions: If True, skip sentences that contain at least one omission annotation (start == -1 or end == -1)
     """
     print(f"Evaluating error span prediction for {dataname}...")
+    
+    # Optionally skip sentences containing omissions
+    if skip_omissions:
+        def has_omission(annotations):
+            return any(a['start'] == -1 or a['end'] == -1 for a in annotations)
+        
+        keep_indices = [i for i, annots in enumerate(annotations_list) if not has_omission(annots)]
+        num_skipped = len(annotations_list) - len(keep_indices)
+        print(f"  Skipping {num_skipped}/{len(annotations_list)} sentences containing omissions")
+        
+        mt_texts = [mt_texts[i] for i in keep_indices]
+        annotations_list = [annotations_list[i] for i in keep_indices]
+        # Also filter the results (token-level scores) to match
+        results = {
+            k: [v[i] for i in keep_indices] if isinstance(v, list) and len(v) == len(keep_indices) + num_skipped else v
+            for k, v in results.items()
+        }
     
     # Compute and log gold annotation statistics (independent of predictions)
     gold_char_labels_list = [
@@ -1048,7 +1066,7 @@ def main():
     if 'annotations' in test_dataset.column_names:
         annotations_list = list(test_dataset['annotations'])
         tokenizer = AutoTokenizer.from_pretrained(configs['model_id'])
-        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir, configs.get('split'))
+        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir, configs.get('split'), skip_omissions=True)
     
 
 if __name__ == "__main__":

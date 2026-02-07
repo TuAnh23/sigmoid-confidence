@@ -236,13 +236,15 @@ def has_no_none_values(example):
 
 # ==================== MQM Dataset Preprocessing Functions ====================
 
-def load_wmt24_esa_dataset(jsonl_path, lang_pair=None):
+def load_wmt24_esa_dataset(jsonl_path, lang_pair=None, keep_omissions=False):
     """
     Load WMT24 ESA dataset from a JSONL file and convert to MQM format.
     
     Args:
         jsonl_path: Path to the JSONL file
         lang_pair: Optional language pair filter (e.g., "en-cs"). If None, load all.
+        keep_omissions: If True, keep omission annotations (where start_i/end_i is 'missing')
+            with start/end stored as -1. If False (default), skip them.
         
     Returns:
         HuggingFace Dataset with fields: src, mt, lp, annotations
@@ -260,14 +262,24 @@ def load_wmt24_esa_dataset(jsonl_path, lang_pair=None):
             # esa_spans uses start_i/end_i (character indices), we convert to start/end
             annotations = []
             for span in item.get('esa_spans', []):
-                if span['start_i'] == 'missing' or span['end_i'] == 'missing':
+                is_omission = span['start_i'] == 'missing' or span['end_i'] == 'missing'
+                if is_omission and not keep_omissions:
                     continue
-                annotations.append({
-                    'start': span['start_i'],
-                    'end': span['end_i'] + 1,  # Make end exclusive to match MQM format
-                    'severity': span.get('severity', ''),
-                    'text': item['tgt'][span['start_i']:span['end_i'] + 1] if span['start_i'] < len(item['tgt']) else ''
-                })
+                if is_omission:
+                    # Store omission indices as -1 to avoid inconsistent type errors
+                    annotations.append({
+                        'start': -1,
+                        'end': -1,
+                        'severity': span.get('severity', ''),
+                        'text': ''
+                    })
+                else:
+                    annotations.append({
+                        'start': span['start_i'],
+                        'end': span['end_i'] + 1,  # Make end exclusive to match MQM format
+                        'severity': span.get('severity', ''),
+                        'text': item['tgt'][span['start_i']:span['end_i'] + 1] if span['start_i'] < len(item['tgt']) else ''
+                    })
             
             data.append({
                 'src': item['src'],
@@ -459,7 +471,7 @@ def build_datasets(
         # Parse language pair from tgt_lang if provided (reusing tgt_lang param for lp)
         lang_pair = tgt_lang  # e.g., "en-cs"
         
-        dataset = load_wmt24_esa_dataset(jsonl_path, lang_pair=lang_pair)
+        dataset = load_wmt24_esa_dataset(jsonl_path, lang_pair=lang_pair, keep_omissions=raw_text_string)
         
         # Filter out samples without annotations if requested
         if mqm_filter_no_annotations:
