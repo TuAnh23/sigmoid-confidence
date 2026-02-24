@@ -144,6 +144,8 @@ def main():
     results = defaultdict(list)
 
     start_time = time.time()
+    i = 0  # Global sample index
+    interested_samples = [] # Used for manual inspection
     with torch.no_grad():
         for batch in tqdm(test_dataloader, desc="Inference Progress"):
             # Ensure batch is moved to correct device
@@ -268,7 +270,8 @@ def main():
                 results['log_weighted_boosted_prob_scores'].append(log_weighted_boosted_prob[batch_item][start_idx:end_idx].cpu().tolist())
                 results['combined_scores'].append(pred_combined_scores[batch_item][start_idx:end_idx].cpu().tolist())
 
-                if args.manual_inspect:
+                # Only inspect if manual_inspect is enabled and sample is in interested_samples
+                if args.manual_inspect and (i + batch_item) in interested_samples:
                     for j in range(end_idx-start_idx):
                         print(f"SOURCE: {model.tokenizer.decode(batch['input_ids'][batch_item], skip_special_tokens=True)}")
                         print(f"PRED: {model.tokenizer.decode(output_ids[batch_item], skip_special_tokens=True)}")
@@ -281,7 +284,9 @@ def main():
                         print(f"Top k tokens by main head: {model.tokenizer.convert_ids_to_tokens(log_scores.exp()[batch_item][start_idx+j].topk(k=10).indices)}")
                         print(f"Top k tokens by conf head: {model.tokenizer.convert_ids_to_tokens(confidence_log_scores.exp()[batch_item][start_idx+j].topk(k=10).indices)}")
                         print(f"Conf scores of main head top k: {confidence_log_scores.exp()[batch_item][start_idx+j][log_scores.exp()[batch_item][start_idx+j].topk(k=10).indices]}")
+                        print(f"Main scores of main head top k: {log_scores.exp()[batch_item][start_idx+j][log_scores.exp()[batch_item][start_idx+j].topk(k=10).indices]}")
                         breakpoint()
+            i = i + configs['per_device_test_batch_size']
                 
 
     end_time = time.time()
