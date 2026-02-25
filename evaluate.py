@@ -3,7 +3,7 @@ import argparse
 import os
 import wandb
 from transformers import set_seed
-from utils import load_yaml_files, load_text_file, load_comet_model, format_for_comet, write_text_file
+from utils import load_yaml_files, load_text_file, load_comet_model, format_for_comet, write_text_file, load_pickle, write_pickle
 import json
 from scipy.stats import pearsonr, spearmanr, kendalltau
 from prepare_data import build_datasets
@@ -578,6 +578,11 @@ def token_scores_to_char_labels(token_scores, mt_text, tokenizer, threshold, inv
     return char_labels
 
 
+def has_omission(annotations):
+    """Check if any annotation in the list is an omission (start == -1 or end == -1)."""
+    return any(a['start'] == -1 or a['end'] == -1 for a in annotations)
+
+
 def annotations_to_char_labels(annotations, mt_text_length):
     """
     Convert annotation spans to character-level binary labels.
@@ -723,7 +728,7 @@ def find_optimal_threshold_for_esa(token_scores_list, mt_texts, gold_char_labels
     return best_threshold, best_f1, all_results
 
 
-def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir, split=None, skip_omissions=False):
+def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list, tokenizer, output_dir, split=None):
     """
     Evaluate model scores for error span prediction on MQM/ESA datasets.
     
@@ -742,26 +747,8 @@ def eval_model_scores_error_spans(results, dataname, mt_texts, annotations_list,
         tokenizer: The tokenizer used for the model
         output_dir: Output directory for saving results
         split: The dataset split, determines whether to find or retrieve threshold (only calculate optimal threshold on 'dev')
-        skip_omissions: If True, skip sentences that contain at least one omission annotation (start == -1 or end == -1)
     """
     print(f"Evaluating error span prediction for {dataname}...")
-    
-    # Optionally skip sentences containing omissions
-    if skip_omissions:
-        def has_omission(annotations):
-            return any(a['start'] == -1 or a['end'] == -1 for a in annotations)
-        
-        keep_indices = [i for i, annots in enumerate(annotations_list) if not has_omission(annots)]
-        num_skipped = len(annotations_list) - len(keep_indices)
-        print(f"  Skipping {num_skipped}/{len(annotations_list)} sentences containing omissions")
-        
-        mt_texts = [mt_texts[i] for i in keep_indices]
-        annotations_list = [annotations_list[i] for i in keep_indices]
-        # Also filter the results (token-level scores) to match
-        results = {
-            k: [v[i] for i in keep_indices] if isinstance(v, list) and len(v) == len(keep_indices) + num_skipped else v
-            for k, v in results.items()
-        }
     
     # Compute and log gold annotation statistics (independent of predictions)
     gold_char_labels_list = [
@@ -975,6 +962,84 @@ def log_correlations(dataname, qe_output, pseudo_gold_quality, human_gold_qualit
             log_dict[f"{dataname}_{qe_name}{agg}/sent_level_brier_score_loss_humanGold"] = brier_score_loss(y, x),
         wandb.log(log_dict)
 
+def calculate_xcomet_baseline_on_esa(src, pred_txt, ref, annotations_list, configs, output_dir, use_comet_cache, tokenizer=None):
+    """Evaluate XCOMET model on MQM/ESA datasets.
+    """
+    if annotations_list is None:
+        print(f"Warning: no annotations for ESA/MQM")
+        return None
+    if 'XCOMET' not in configs.get('comet_esa_baseline', ''):
+        print(f"Warning: comet_esa_baseline is invalid (only XCOMET models work)")
+        return None
+    
+    if ref == None:
+        suffix = "ref_free"
+    else:
+        suffix = "ref_based"
+        
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs.get('comet_esa_baseline')}_esa_{suffix}.txt"
+    if os.path.isfile(cache_path) and use_comet_cache:
+        print(f"Load pre-computed ESA labels from {configs['comet_esa_baseline']} ...")
+        esa_pred = load_pickle(cache_path)
+    else:
+        print("Running XCOMET for ESA ...")
+        comet_esa_baseline = load_comet_model(model_name=configs['comet_esa_baseline'])
+        esa_pred = comet_esa_baseline.predict(
+            format_for_comet(src, pred_txt, ref), batch_size=4, gpus=1
+        ).metadata.error_spans
+        write_pickle(esa_pred, cache_path)
+
+    # Calculate and log the evaluation scores to wandb
+    qe_name = configs.get('comet_esa_baseline') + f"_{suffix}"
+    dataname = configs['dataname']
+
+    # Convert XCOMET predicted error spans to character-level labels
+    pred_char_labels_list = [
+        annotations_to_char_labels(spans, len(mt_text))
+        for spans, mt_text in zip(esa_pred, pred_txt)
+    ]
+
+    # Gold character-level labels
+    gold_char_labels_list = [
+        annotations_to_char_labels(annotations, len(mt_text))
+        for annotations, mt_text in zip(annotations_list, pred_txt)
+    ]
+
+    # Character-level metrics
+    char_results = calculate_esa_f1(pred_char_labels_list, gold_char_labels_list)
+
+    log_dict = {
+        f"{dataname}_{qe_name}/esa_f1_char": char_results['f1'],
+        f"{dataname}_{qe_name}/esa_precision_char": char_results['precision'],
+        f"{dataname}_{qe_name}/esa_recall_char": char_results['recall'],
+    }
+
+    print(f"  {qe_name}:")
+    print(f"    Character-level F1: {char_results['f1']:.4f}")
+    print(f"    Character-level Precision: {char_results['precision']:.4f}, Recall: {char_results['recall']:.4f}")
+
+    # Token-level metrics (if tokenizer is provided)
+    if tokenizer is not None:
+        pred_token_labels_list = [
+            char_labels_to_token_labels(char_labels, mt_text, tokenizer)
+            for char_labels, mt_text in zip(pred_char_labels_list, pred_txt)
+        ]
+        gold_token_labels_list = [
+            char_labels_to_token_labels(char_labels, mt_text, tokenizer)
+            for char_labels, mt_text in zip(gold_char_labels_list, pred_txt)
+        ]
+        token_results = calculate_esa_f1(pred_token_labels_list, gold_token_labels_list)
+        log_dict.update({
+            f"{dataname}_{qe_name}/esa_f1_token": token_results['f1'],
+            f"{dataname}_{qe_name}/esa_precision_token": token_results['precision'],
+            f"{dataname}_{qe_name}/esa_recall_token": token_results['recall'],
+        })
+        print(f"    Token-level F1: {token_results['f1']:.4f}")
+        print(f"    Token-level Precision: {token_results['precision']:.4f}, Recall: {token_results['recall']:.4f}")
+
+    wandb.log(log_dict)
+    return esa_pred
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-file-paths", type=str, nargs='+', required=True)
@@ -1019,6 +1084,7 @@ def main():
     src = list(test_dataset['src'])
     ref = list(test_dataset['ref']) if 'ref' in test_dataset.column_names else None
     mt = list(test_dataset['mt']) if 'mt' in test_dataset.column_names else None
+    annotations_list = list(test_dataset['annotations']) if 'annotations' in test_dataset.column_names else None
 
     write_text_file(src, f"{output_dir}/inference_{configs['dataname']}/src.txt")
     if ref is not None:
@@ -1031,6 +1097,8 @@ def main():
         results = json.load(f)
 
     human_gold_quality = None
+    pseudo_gold_quality = None
+
     if configs.get('force_decoding') and os.path.isfile(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}"):
         # This is the setting where we do forced decoding on translations where human quality scores are available
         human_gold_quality = load_text_file(f"{os.environ.get('ROOT_DIR')}/{configs.get('human_da_path')}")
@@ -1040,7 +1108,35 @@ def main():
             f"{configs['dataname']}_humanScore": np.mean(human_gold_quality)
         })
 
-    if ("wmt" in configs['dataname']) or ("ParaCrawl" in configs['dataname']) or ("biomqm" in configs['dataname']):
+    if annotations_list is not None:
+        # MQM/ESA annotated datasets
+        # Skip sentences containing omissions (start == -1 or end == -1) upfront
+        keep_indices = [i for i, annots in enumerate(annotations_list) if not has_omission(annots)]
+        num_skipped = len(annotations_list) - len(keep_indices)
+        if num_skipped > 0:
+            print(f"Skipping {num_skipped}/{len(annotations_list)} sentences containing omissions")
+            src = [src[i] for i in keep_indices]
+            if ref is not None:
+                ref = [ref[i] for i in keep_indices]
+            mt = [mt[i] for i in keep_indices]
+            annotations_list = [annotations_list[i] for i in keep_indices]
+            results = {
+                k: [v[i] for i in keep_indices] if isinstance(v, list) and len(v) == len(keep_indices) + num_skipped else v
+                for k, v in results.items()
+            }
+
+        # Calculate the performance of XCOMET on the MQM/ESA task
+        tokenizer = AutoTokenizer.from_pretrained(configs['model_id'])
+        if ref is not None:
+            calculate_xcomet_baseline_on_esa(
+                src, results['pred_txt'], ref, annotations_list, configs, output_dir, args.use_comet_cache,
+                tokenizer=tokenizer
+            )
+        calculate_xcomet_baseline_on_esa(
+            src, results['pred_txt'], None, annotations_list, configs, output_dir, args.use_comet_cache,
+            tokenizer=tokenizer
+        )
+    elif ("wmt" in configs['dataname']) or ("ParaCrawl" in configs['dataname']) or ("biomqm" in configs['dataname']):
         # Specific to translation test sets (using COMET models as pseudo ground-truth and supervised baseline)
         pseudo_gold_quality = calculate_comet_ref_gold(
             src, results['pred_txt'], ref, configs, output_dir, args.use_comet_cache
@@ -1063,10 +1159,8 @@ def main():
     eval_model_scores_qe(results, configs, pseudo_gold_quality, human_gold_quality)
     
     # Eval error span prediction for MQM/ESA datasets
-    if 'annotations' in test_dataset.column_names:
-        annotations_list = list(test_dataset['annotations'])
-        tokenizer = AutoTokenizer.from_pretrained(configs['model_id'])
-        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir, configs.get('split'), skip_omissions=True)
+    if annotations_list is not None:
+        eval_model_scores_error_spans(results, configs['dataname'], mt, annotations_list, tokenizer, output_dir, configs.get('split'))
     
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+from networkx import to_dict_of_dicts
 import torch
 import os
 import yaml
@@ -82,6 +83,15 @@ def find_start_idx(out_ids, generation_prompt):
     # Prompt not found → fall back to 0
     return 0
 
+def load_pickle(file_path):
+    import pickle
+    with open(file_path, 'rb') as f:
+        return pickle.load(f)
+
+def write_pickle(object, file_path):
+    import pickle
+    with open(file_path, 'wb') as f:
+        pickle.dump(object, f)
     
 def load_text_file(file_path):
     """

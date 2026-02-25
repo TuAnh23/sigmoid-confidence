@@ -1,5 +1,6 @@
 comet_qe_baseline: "wmt22-cometkiwi-da"
 comet_ref_based: "XCOMET-XL"
+comet_esa_baseline: "XCOMET-XL"
 force_decoding: False
 generation_kwargs:
   do_sample: True
