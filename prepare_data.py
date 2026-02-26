@@ -212,7 +212,7 @@ def format_raw_data(example, dataname):
             'src': example['question'],
             'ref': example['answer']
         }
-    elif dataname == "RicardoRei/wmt-mqm-error-spans" or dataname.startswith("wmt24_esa"):
+    elif dataname == "RicardoRei/wmt-mqm-error-spans" or dataname == "zouharvi/bio-mqm-dataset" or dataname.startswith("wmt24_esa"):
         formatted_example = {
             'src': example['src'],
             'mt': example['mt'],
@@ -462,6 +462,44 @@ def build_datasets(
             # Source-aware train/dev split
             # Ensure samples with the same source don't appear in both train and dev sets
             dataset = mqm_source_aware_split(dataset, split=split, dev_size=5000)
+    elif dataname == "zouharvi/bio-mqm-dataset":
+        dataset = load_dataset(dataname, split="test")
+
+        # Filter by language pair if src_lang and tgt_lang are specified
+        if src_lang is not None and tgt_lang is not None:
+            dataset = dataset.filter(lambda x: x['lang_src'] == src_lang and x['lang_tgt'] == tgt_lang)
+
+        # Convert bio-mqm format to MQM format consistent with RicardoRei/wmt-mqm-error-spans
+        def convert_bio_mqm_to_mqm_format(example):
+            annotations = []
+            for error in example.get('errors_tgt', []):
+                annotations.append({
+                    'start': error['startIndex'],
+                    'end': error['endIndex'] + 1,  # Make end exclusive to match MQM format
+                    'severity': error.get('severity', ''),
+                    'text': error.get('term', ''),
+                })
+            return {
+                'src': example['src'],
+                'mt': example['tgt'],
+                'lp': f"{example['lang_src']}-{example['lang_tgt']}",
+                'annotations': annotations,
+            }
+
+        dataset = dataset.map(
+            convert_bio_mqm_to_mqm_format,
+            remove_columns=dataset.column_names,
+            load_from_cache_file=False,
+            num_proc=100,
+        )
+
+        # Filter out samples without annotations if requested
+        if mqm_filter_no_annotations:
+            dataset = dataset.filter(lambda x: x.get('annotations') and len(x['annotations']) > 0)
+
+        # Apply deduplication if requested
+        dataset = mqm_deduplicate_dataset(dataset, mode=mqm_deduplicate)
+
     elif dataname.startswith("wmt24_esa"):
         # ==================== WMT24 ESA Dataset ====================
         # Local JSONL dataset with ESA (Error Span Annotation) format.
@@ -524,7 +562,7 @@ def build_datasets(
     
     if not raw_text_string:
         # Use special tokenization for MQM data that creates token-level labels
-        if dataname == "RicardoRei/wmt-mqm-error-spans" or dataname.startswith("wmt24_esa"):
+        if dataname == "RicardoRei/wmt-mqm-error-spans" or dataname == "zouharvi/bio-mqm-dataset" or dataname.startswith("wmt24_esa"):
             dataset = dataset.map(
                 lambda x: format_and_tokenize_mqm_example_for_teacher_forcing(x, tokenizer, max_length),
                 load_from_cache_file=False,
@@ -682,7 +720,7 @@ def create_token_labels_from_mqm_annotations(mt_text, annotations, tokenizer):
     
     Args:
         mt_text: The machine translation text
-        annotations: List of annotation dicts with 'start', 'end', 'severity', 'text' keys
+        annotations: List of annotation dicts with 'start', 'end' keys
         tokenizer: The tokenizer to use
         
     Returns:
