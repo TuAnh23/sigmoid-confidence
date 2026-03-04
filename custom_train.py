@@ -87,6 +87,9 @@ class CustomTrainingArguments(TrainingArguments):
         freeze_base_model=True,
         mqm_training_mode=False,  # Enable MQM token-level training mode
         weight_for_negative_mqm=1.0,  # Weight multiplier for negative samples in MQM mode
+        add_ranking_loss=False,  # Add ranking loss to push positive above dominant tokens
+        ranking_loss_margin=0.0,  # Margin for the ranking loss
+        ranking_loss_weight=1.0,  # Weight multiplier for the ranking loss
         find_dominant_kwargs={},
         **kwargs
     ):
@@ -102,6 +105,9 @@ class CustomTrainingArguments(TrainingArguments):
         self.find_dominant_kwargs = find_dominant_kwargs
         self.mqm_training_mode = mqm_training_mode
         self.weight_for_negative_mqm = weight_for_negative_mqm
+        self.add_ranking_loss = add_ranking_loss
+        self.ranking_loss_margin = ranking_loss_margin
+        self.ranking_loss_weight = ranking_loss_weight
 
 
 class CustomTrainer(Trainer):
@@ -350,10 +356,16 @@ class CustomTrainer(Trainer):
 
         if self.args.negative_sampling:
             # Sample negative tokens
-            neg_row_idx, neg_col_idx = self.negative_sampling_mask(
+            return_dominant = self.args.add_ranking_loss and self.args.negative_sampling_avoid_dominant
+            sampling_result = self.negative_sampling_mask(
                 torch.nn.functional.log_softmax(shift_logits, dim=-1), 
-                shift_labels
+                shift_labels,
+                return_dominant=return_dominant
             )
+            if return_dominant:
+                neg_row_idx, neg_col_idx, dominant_row_indices, dominant_col_indices = sampling_result
+            else:
+                neg_row_idx, neg_col_idx = sampling_result
 
             # Ignore the padding tokens
             non_padding = shift_labels[neg_row_idx] != self.model.tokenizer.pad_token_id
@@ -368,6 +380,36 @@ class CustomTrainer(Trainer):
                 model, outputs, shift_hidden_states, shift_logits,
                 neg_row_idx, neg_col_idx, targets, pos_weight
             )
+
+            # Ranking loss: penalize when dominant (non-target) tokens are ranked above the true positive
+            if return_dominant and dominant_row_indices is not None and len(dominant_row_indices) > 0:
+                # Filter out dominant tokens that ARE the true label (we only penalize non-target dominant tokens)
+                dom_labels_at_pos = shift_labels[dominant_row_indices]
+                non_label_mask = dominant_col_indices != dom_labels_at_pos
+                # Also filter out padding positions
+                non_pad_mask = dom_labels_at_pos != self.model.tokenizer.pad_token_id
+                keep_mask = non_label_mask & non_pad_mask
+                dom_row = dominant_row_indices[keep_mask]
+                dom_col = dominant_col_indices[keep_mask]
+
+                if len(dom_row) > 0:
+                    pos_col = shift_labels[dom_row]  # true label token for each position
+                    with torch.autocast("cuda", enabled=False):
+                        # Confidence logit for the true positive token
+                        pos_confidence = self.sampled_confidence_logits(
+                            shift_hidden_states, shift_logits, model, dom_row, pos_col
+                        )
+                        # Confidence logit for the dominant (non-target) token
+                        dom_confidence = self.sampled_confidence_logits(
+                            shift_hidden_states, shift_logits, model, dom_row, dom_col
+                        )
+                    # MarginRankingLoss: loss = max(0, -target * (x1 - x2) + margin)
+                    # With target=1: loss = max(0, -(pos - dom) + margin) = max(0, dom - pos + margin)
+                    ranking_target = torch.ones_like(pos_confidence)
+                    ranking_loss_fn = torch.nn.MarginRankingLoss(margin=self.args.ranking_loss_margin)
+                    ranking_loss = ranking_loss_fn(pos_confidence, dom_confidence, ranking_target)
+                    loss = loss + self.args.ranking_loss_weight * ranking_loss
+                    outputs['loss'] = loss
         else:
             # Full vocabulary computation
             loss, outputs = self._compute_loss_full_vocab(
@@ -503,10 +545,11 @@ class CustomTrainer(Trainer):
         return sampling_distribution
         
 
-    def negative_sampling_mask(self, softmax_lprobs, labels):
+    def negative_sampling_mask(self, softmax_lprobs, labels, return_dominant=False):
         """
         :param softmax_lprobs: lprobs output by the original softmax head
         :param labels: one-hot encoded LM labels
+        :param return_dominant: if True, also return dominant row/col indices
         :return:
         """
         if self.args.negative_sampling_avoid_dominant:
@@ -583,6 +626,8 @@ class CustomTrainer(Trainer):
         row_idx = unique_pairs[:, 0]
         col_idx = unique_pairs[:, 1]
         
+        if return_dominant:
+            return row_idx, col_idx, dominant_row_indices, dominant_col_indices
         return row_idx, col_idx
 
 

@@ -132,6 +132,9 @@ def main():
         find_dominant_kwargs=configs.get('find_dominant_kwargs', {}),
         mqm_training_mode=configs.get('mqm_training_mode', False),  # Enable MQM token-level training mode
         weight_for_negative_mqm=configs.get('weight_for_negative_mqm', 1.0),  # Weight for negative samples in MQM mode
+        add_ranking_loss=configs.get('add_ranking_loss', False),
+        ranking_loss_margin=configs.get('ranking_loss_margin', 0.0),
+        ranking_loss_weight=configs.get('ranking_loss_weight', 1.0),
         )
 
     trainer = CustomTrainer(
