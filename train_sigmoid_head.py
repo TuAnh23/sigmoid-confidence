@@ -131,6 +131,7 @@ def main():
         freeze_base_model=configs.get('freeze_base_model'),
         find_dominant_kwargs=configs.get('find_dominant_kwargs', {}),
         mqm_training_mode=configs.get('mqm_training_mode', False),  # Enable MQM token-level training mode
+        weight_for_negative_mqm=configs.get('weight_for_negative_mqm', 1.0),  # Weight for negative samples in MQM mode
         )
 
     trainer = CustomTrainer(

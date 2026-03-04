@@ -86,6 +86,7 @@ class CustomTrainingArguments(TrainingArguments):
         weight_positive="balance",
         freeze_base_model=True,
         mqm_training_mode=False,  # Enable MQM token-level training mode
+        weight_for_negative_mqm=1.0,  # Weight multiplier for negative samples in MQM mode
         find_dominant_kwargs={},
         **kwargs
     ):
@@ -100,6 +101,7 @@ class CustomTrainingArguments(TrainingArguments):
         self.freeze_base_model = freeze_base_model
         self.find_dominant_kwargs = find_dominant_kwargs
         self.mqm_training_mode = mqm_training_mode
+        self.weight_for_negative_mqm = weight_for_negative_mqm
 
 
 class CustomTrainer(Trainer):
@@ -232,7 +234,7 @@ class CustomTrainer(Trainer):
         return shift_labels, shift_logits, shift_hidden_states, outputs
 
     def _compute_loss_from_samples(self, model, outputs, shift_hidden_states, shift_logits, 
-                                    row_idx, col_idx, targets, pos_weight=None):
+                                    row_idx, col_idx, targets, pos_weight=None, sample_weights=None):
         """
         Compute confidence logits for sampled positions and return BCE loss.
         Used when negative_sampling=True.
@@ -246,6 +248,7 @@ class CustomTrainer(Trainer):
             col_idx: Column indices for sampled positions
             targets: Target values (0 or 1) for each sampled position
             pos_weight: Optional positive class weight for BCE loss
+            sample_weights: Optional per-sample weight tensor for BCE loss
             
         Returns:
             tuple: (loss, outputs)
@@ -261,7 +264,9 @@ class CustomTrainer(Trainer):
             )
 
         # BCE loss
-        bce_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        # shift_confidence_logits: [N], targets: [N], sample_weights: [N] or None, pos_weight: scalar or None
+        # All three tensors share the same dimension N (one entry per sampled position)
+        bce_loss_fn = torch.nn.BCEWithLogitsLoss(weight=sample_weights, pos_weight=pos_weight)
         bce_loss = bce_loss_fn(shift_confidence_logits, targets)
 
         # Combine with base model loss if not frozen
@@ -410,6 +415,7 @@ class CustomTrainer(Trainer):
         row_idx_list = []   # Indices into shift_* tensors (row dimension)
         col_idx_list = []   # Token IDs (column dimension / vocabulary)
         target_list = []    # Binary targets: 1 for correct, 0 for incorrect
+        is_mqm_error_list = []  # Track which samples originate from MQM error spans (mqm_label=0)
         
         # Handle correct tokens (mqm_label = 1): positive + negative sampling
         if len(correct_indices) > 0:
@@ -428,10 +434,12 @@ class CustomTrainer(Trainer):
                 col_idx_list.append(neg_col_idx)
                 # Target is 1 only for the actual label token, 0 for sampled negatives
                 target_list.append((neg_col_idx == correct_labels[neg_row_idx]).float())
+                is_mqm_error_list.append(torch.zeros(len(mapped_row_idx), dtype=torch.bool, device=correct_labels.device))
             else:
                 row_idx_list.append(correct_indices)
                 col_idx_list.append(correct_labels)
                 target_list.append(torch.ones(len(correct_indices), device=correct_labels.device))
+                is_mqm_error_list.append(torch.zeros(len(correct_indices), dtype=torch.bool, device=correct_labels.device))
         
         # Handle erroneous tokens (mqm_label = 0): single negative only
         if len(error_indices) > 0:
@@ -439,6 +447,7 @@ class CustomTrainer(Trainer):
             row_idx_list.append(error_indices)
             col_idx_list.append(error_labels)
             target_list.append(torch.zeros(len(error_indices), device=error_labels.device))
+            is_mqm_error_list.append(torch.ones(len(error_indices), dtype=torch.bool, device=error_labels.device))
         
         # Edge case: no valid tokens
         if len(row_idx_list) == 0:
@@ -446,9 +455,10 @@ class CustomTrainer(Trainer):
             outputs['loss'] = loss
             return (loss, outputs) if return_outputs else loss
         
-        row_idx = torch.cat(row_idx_list)
-        col_idx = torch.cat(col_idx_list)
-        targets = torch.cat(target_list)
+        row_idx = torch.cat(row_idx_list)          # [N] indices into shift_* tensors
+        col_idx = torch.cat(col_idx_list)          # [N] token IDs (vocabulary indices)
+        targets = torch.cat(target_list)           # [N] binary targets: 1=correct, 0=incorrect
+        is_mqm_error = torch.cat(is_mqm_error_list)  # [N] bool: True only for MQM error-span tokens (mqm_label=0)
         
         # Calculate pos_weight for class imbalance
         if self.args.weight_positive == "balance":
@@ -458,9 +468,19 @@ class CustomTrainer(Trainer):
         else:
             pos_weight = None
         
+        # Per-sample weights: apply higher weight only to MQM error-span tokens (mqm_label=0)
+        # sample_weights shape: [N], same as targets and shift_confidence_logits in _compute_loss_from_samples
+        sample_weights = None
+        if self.args.weight_for_negative_mqm != 1.0:
+            sample_weights = torch.where(
+                is_mqm_error,                       # [N] bool mask
+                torch.tensor(self.args.weight_for_negative_mqm, device=targets.device),  # scalar broadcast to [N]
+                torch.tensor(1.0, device=targets.device)                                  # scalar broadcast to [N]
+            )  # [N] per-sample weights
+        
         loss, outputs = self._compute_loss_from_samples(
             model, outputs, shift_hidden_states, shift_logits,
-            row_idx, col_idx, targets, pos_weight
+            row_idx, col_idx, targets, pos_weight, sample_weights
         )
         
         return (loss, outputs) if return_outputs else loss

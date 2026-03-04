@@ -13,6 +13,11 @@ dataname: "RicardoRei/wmt-mqm-error-spans"
 # MQM-specific training settings
 mqm_training_mode: True
 
+# Weight multiplier for negative (erroneous) samples in MQM loss.
+# Higher values increase the loss contribution of MQM error-span tokens.
+# Default: 1.0 (no extra weighting)
+weight_for_negative_mqm: 10
+
 # MQM deduplication mode (optional):
 # - null: No deduplication (keep all samples)
 # - "src": Keep only one sample per unique source sentence
@@ -27,3 +32,7 @@ mqm_filter_no_annotations: False
 
 # Maximum sequence length for tokenization
 max_length: 896
+
+# zh-en                     74907        44.8%
+# en-de                     56483        33.7%
+# en-ru                     35970        21.5%
