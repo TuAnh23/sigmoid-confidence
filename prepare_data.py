@@ -489,7 +489,7 @@ def build_datasets(
         dataset = dataset.map(
             convert_bio_mqm_to_mqm_format,
             remove_columns=dataset.column_names,
-            load_from_cache_file=False,
+            load_from_cache_file=True,
             num_proc=100,
         )
 
@@ -565,7 +565,7 @@ def build_datasets(
         if dataname == "RicardoRei/wmt-mqm-error-spans" or dataname == "zouharvi/bio-mqm-dataset" or dataname.startswith("wmt24_esa"):
             dataset = dataset.map(
                 lambda x: format_and_tokenize_mqm_example_for_teacher_forcing(x, tokenizer, max_length),
-                load_from_cache_file=False,
+                load_from_cache_file=True,
                 num_proc=100
             )
             # Set format for PyTorch - include mqm_token_labels for MQM training mode
@@ -576,7 +576,7 @@ def build_datasets(
                     format_and_tokenize_example_for_teacher_forcing(x, dataname, src_lang, tgt_lang, tokenizer, max_length) 
                     if teacher_forcing
                     else format_and_tokenize_example_for_inference(x, dataname, src_lang, tgt_lang, tokenizer, max_length),
-                load_from_cache_file=False,
+                load_from_cache_file=True,
                 num_proc=100
             )
 
@@ -585,7 +585,7 @@ def build_datasets(
     else:
         dataset = dataset.map(
             lambda x: format_raw_data(x, dataname),
-            load_from_cache_file=False,
+            load_from_cache_file=True,
             num_proc=100,
             remove_columns=dataset.column_names
         )
