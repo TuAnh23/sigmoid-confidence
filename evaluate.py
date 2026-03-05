@@ -977,7 +977,7 @@ def calculate_xcomet_baseline_on_esa(src, pred_txt, ref, annotations_list, confi
     else:
         suffix = "ref_based"
         
-    cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs.get('comet_esa_baseline')}_esa_{suffix}.txt"
+    cache_path = f"{output_dir}/inference_{configs['dataname']}/{configs.get('comet_esa_baseline')}_esa_{suffix}.pkl"
     if os.path.isfile(cache_path) and use_comet_cache:
         print(f"Load pre-computed ESA labels from {configs['comet_esa_baseline']} ...")
         esa_pred = load_pickle(cache_path)

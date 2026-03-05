@@ -216,6 +216,7 @@ def format_raw_data(example, dataname):
         formatted_example = {
             'src': example['src'],
             'mt': example['mt'],
+            'ref': example.get('ref'),
             'annotations': example['annotations'],
         }
     else:
@@ -482,6 +483,7 @@ def build_datasets(
             return {
                 'src': example['src'],
                 'mt': example['tgt'],
+                'ref': example['ref'][0] if ('ref' in example.keys() and isinstance(example['ref'], list) and len(example['ref']) > 0) else "",
                 'lp': f"{example['lang_src']}-{example['lang_tgt']}",
                 'annotations': annotations,
             }
